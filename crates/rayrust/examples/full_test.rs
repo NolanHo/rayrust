@@ -1,4 +1,4 @@
-//! Comprehensive test: wait, remote task, cross-language (Python), actor, placement group.
+//! Comprehensive test: all features.
 
 use rayrust::prelude::*;
 
@@ -41,25 +41,34 @@ async fn main() {
     let v: i32 = r.get_async().await.expect("add failed");
     println!("add(3, 4) = {} ✓", v);
 
-    // ── 3. Cross-language: Python Task ──────────────────────
-    println!("\n--- 3. Cross-language: Python Task ---");
+    // ── 3. Batch Get (get_many) ─────────────────────────────
+    println!("\n--- 3. Batch Get ---");
+    let r1 = rayrust::put(&100i32);
+    let r2 = rayrust::put(&200i32);
+    let r3 = rayrust::put(&300i32);
+    let vals = rayrust::get_many(&[r1, r2, r3]).expect("get_many failed");
+    println!("get_many: {:?} ✓", vals);
+
+    // ── 4. Cross-language: Python Task ──────────────────────
+    println!("\n--- 4. Cross-language: Python Task ---");
     let arg_a = rayrust::serialize(&5i64).unwrap();
     let arg_b = rayrust::serialize(&3i64).unwrap();
     let args: Vec<&[u8]> = vec![&arg_a, &arg_b];
 
     match rayrust::task_call_python("rayrust_test", "add", &args) {
         Ok(obj_ref) => {
-            println!("Python add(5, 3) task submitted ✓");
-            // Python result has xlang header — direct get_async won't strip it.
-            // The xlang result deserialization requires raw bytes access
-            // which is available via deserialize_xlang().
-            println!("  (xlang result deserialization available via deserialize_xlang)");
+            println!("Python add(5, 3) task submitted");
+            let obj_ref: ObjectRef<i64> = obj_ref.cast();
+            match obj_ref.get_async().await {
+                Ok(val) => println!("Python add(5, 3) = {} ✓ (auto xlang deserialization)", val),
+                Err(e) => println!("Python add result failed: {}", e),
+            }
         }
         Err(e) => println!("Python task_call failed: {}", e),
     }
 
-    // ── 4. Cross-language: Python Actor ─────────────────────
-    println!("\n--- 4. Cross-language: Python Actor ---");
+    // ── 5. Cross-language: Python Actor ─────────────────────
+    println!("\n--- 5. Cross-language: Python Actor ---");
     let arg_start = rayrust::serialize(&10i64).unwrap();
     let args_actor: Vec<&[u8]> = vec![&arg_start];
 
@@ -70,7 +79,13 @@ async fn main() {
             let arg_n = rayrust::serialize(&5i64).unwrap();
             let args_inc: Vec<&[u8]> = vec![&arg_n];
             match rayrust::actor_call_python(actor.id(), "increment", &args_inc) {
-                Ok(_) => println!("Counter.increment(5) submitted ✓"),
+                Ok(obj_ref) => {
+                    let obj_ref: ObjectRef<i64> = obj_ref.cast();
+                    match obj_ref.get_async().await {
+                        Ok(val) => println!("Counter.increment(5) = {} ✓ (auto xlang)", val),
+                        Err(e) => println!("Counter.increment result failed: {}", e),
+                    }
+                }
                 Err(e) => println!("Counter.increment failed: {}", e),
             }
 
@@ -80,8 +95,8 @@ async fn main() {
         Err(e) => println!("Python actor_create failed: {}", e),
     }
 
-    // ── 5. Placement Group ──────────────────────────────────
-    println!("\n--- 5. Placement Group ---");
+    // ── 6. Placement Group ──────────────────────────────────
+    println!("\n--- 6. Placement Group ---");
     let bundles_json = r#"[{"CPU": 1}, {"CPU": 1}]"#;
     match rayrust::placement_group_create("test_pg", bundles_json, 0) {
         Ok(pg_id) => {
@@ -91,6 +106,12 @@ async fn main() {
         }
         Err(e) => println!("PlacementGroup create failed: {}", e),
     }
+
+    // ── 7. id_hex ───────────────────────────────────────────
+    println!("\n--- 7. Debug helpers ---");
+    let obj = rayrust::put(&42i32);
+    println!("ObjectRef id_hex: {} ✓", obj.id_hex());
+    println!("is_initialized: {} ✓", rayrust::is_initialized());
 
     // ── Shutdown ────────────────────────────────────────────
     println!("\n--- Shutdown ---");

@@ -295,11 +295,13 @@ pub(crate) async fn task_call_inner_async(
 }
 
 /// Call a Python remote function.
+/// `module` is the Python module name, `function` is the function name.
+/// Returns an ObjectRef with is_xlang=true (results need xlang header stripping).
 pub(crate) fn task_call_python_inner(
     module: &str,
     function: &str,
     args: &[&[u8]],
-) -> Result<ObjectRef<()>, RayError> {
+) -> Result<Vec<u8>, RayError> {
     let module_c = to_cstring(module);
     let func_c = to_cstring(function);
     let args_arr = build_args_array(args);
@@ -315,7 +317,7 @@ pub(crate) fn task_call_python_inner(
 
     let guard = CBytesGuard::from(bytes)
         .ok_or_else(|| RayError::Ffi(format!("ray_task_call_python '{}.{}' returned null", module, function)))?;
-    Ok(ObjectRef::from_id(guard.as_slice().to_vec()))
+    Ok(guard.as_slice().to_vec())
 }
 
 // ─── Actor ────────────────────────────────────────────────────
@@ -406,7 +408,7 @@ pub(crate) fn actor_call_python_inner(
     actor_id: &[u8],
     method_name: &str,
     args: &[&[u8]],
-) -> Result<ObjectRef<()>, RayError> {
+) -> Result<Vec<u8>, RayError> {
     let method_c = to_cstring(method_name);
     let args_arr = build_args_array(args);
 
@@ -422,7 +424,7 @@ pub(crate) fn actor_call_python_inner(
 
     let guard = CBytesGuard::from(bytes)
         .ok_or_else(|| RayError::Ffi(format!("ray_actor_call_python '{}' returned null", method_name)))?;
-    Ok(ObjectRef::from_id(guard.as_slice().to_vec()))
+    Ok(guard.as_slice().to_vec())
 }
 
 /// Kill an actor.
@@ -479,9 +481,83 @@ pub fn was_current_actor_restarted() -> bool {
 
 /// Get the namespace of this job.
 pub fn get_namespace() -> Result<String, RayError> {
+    if !is_initialized() {
+        return Ok(String::new());
+    }
     let bytes = unsafe { rayrust_sys::ray_get_namespace() };
     let guard = CBytesGuard::from(bytes)
         .ok_or_else(|| RayError::Ffi("ray_get_namespace returned null".into()))?;
     String::from_utf8(guard.as_slice().to_vec())
         .map_err(|e| RayError::Ffi(format!("namespace not valid UTF-8: {}", e)))
+}
+
+/// Get a named actor by name.
+/// `namespace` can be empty string for current namespace.
+/// Returns Ok(Some(handle)) if found, Ok(None) if not found.
+pub fn get_actor(name: &str, namespace: &str) -> Result<Option<ActorHandle>, RayError> {
+    let name_c = to_cstring(name);
+    let ns_c = to_cstring(namespace);
+    let bytes = unsafe { rayrust_sys::ray_get_actor(name_c.as_ptr(), ns_c.as_ptr()) };
+    let guard = CBytesGuard::from(bytes);
+    match guard {
+        Some(g) => {
+            let id = g.as_slice().to_vec();
+            if id.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(ActorHandle { id, is_python: false }))
+            }
+        }
+        None => Ok(None),
+    }
+}
+
+/// Cancel a remote task by object ID.
+/// `force_kill` kills the worker process if true.
+/// `recursive` cancels dependent tasks.
+pub fn cancel(obj_id: &[u8], force_kill: bool, recursive: bool) -> Result<(), RayError> {
+    let ret = unsafe {
+        rayrust_sys::ray_cancel(
+            obj_id.as_ptr() as *const std::os::raw::c_char,
+            obj_id.len(),
+            force_kill,
+            recursive,
+        )
+    };
+    if ret != 0 {
+        return Err(RayError::Runtime("ray_cancel not implemented or failed".into()));
+    }
+    Ok(())
+}
+
+/// Get multiple objects from the object store.
+/// Blocks until all objects are available.
+pub fn get_many<T: serde::de::DeserializeOwned>(refs: &[ObjectRef<T>]) -> Result<Vec<T>, RayError> {
+    let ids: Vec<RayBytes> = refs.iter().map(|r| RayBytes {
+        data: r.id().as_ptr() as *const std::os::raw::c_char,
+        len: r.id().len(),
+    }).collect();
+
+    let result = unsafe { rayrust_sys::ray_get_many(ids.as_ptr(), ids.len(), -1) };
+    if result.is_null() {
+        return Err(RayError::Ffi("ray_get_many returned null".into()));
+    }
+
+    let mut results = Vec::with_capacity(refs.len());
+    for i in 0..refs.len() {
+        let bytes = unsafe { &*result.add(i) };
+        if bytes.data.is_null() {
+            unsafe { rayrust_sys::ray_free_bytes_array(result, refs.len()) };
+            return Err(RayError::ObjectNotFound(format!("object {} not found", i)));
+        }
+        let slice = unsafe { std::slice::from_raw_parts(bytes.data as *const u8, bytes.len) };
+        let val = if refs[i].is_xlang {
+            crate::serialize::deserialize_xlang(slice)?
+        } else {
+            crate::serialize::deserialize(slice)?
+        };
+        results.push(val);
+    }
+    unsafe { rayrust_sys::ray_free_bytes_array(result, refs.len()) };
+    Ok(results)
 }

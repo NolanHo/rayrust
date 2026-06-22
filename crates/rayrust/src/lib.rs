@@ -22,7 +22,8 @@ pub use ctor;
 pub use error::RayError;
 pub use object_ref::ObjectRef;
 pub use runtime::{
-    get_namespace, init, init_with_config, is_initialized, put, put_async, get, get_async, wait,
+    get_namespace, get_actor, cancel, get_many,
+    init, init_with_config, is_initialized, put, put_async, get, get_async, wait,
     was_current_actor_restarted, shutdown, ActorHandle, RayConfig,
 };
 pub use serialize::{deserialize, deserialize_xlang, serialize};
@@ -57,7 +58,8 @@ pub async fn task_call_async(func_name: &str, args: Vec<Vec<u8>>) -> Result<Obje
 /// Call a Python remote function.
 /// `module` is the Python module name, `function` is the function name.
 pub fn task_call_python(module: &str, function: &str, args: &[&[u8]]) -> Result<ObjectRef<()>, RayError> {
-    crate::runtime::task_call_python_inner(module, function, args)
+    let id = crate::runtime::task_call_python_inner(module, function, args)?;
+    Ok(ObjectRef::from_id_xlang(id))
 }
 
 /// Create an actor by factory function name.
@@ -79,7 +81,8 @@ pub fn actor_call(actor_id: &[u8], func_name: &str, args: &[&[u8]]) -> Result<Ob
 /// Call a method on a Python actor.
 /// `method_name` is the Python method name (without `self`).
 pub fn actor_call_python(actor_id: &[u8], method_name: &str, args: &[&[u8]]) -> Result<ObjectRef<()>, RayError> {
-    crate::runtime::actor_call_python_inner(actor_id, method_name, args)
+    let id = crate::runtime::actor_call_python_inner(actor_id, method_name, args)?;
+    Ok(ObjectRef::from_id_xlang(id))
 }
 
 /// Kill an actor.
@@ -92,12 +95,12 @@ pub mod prelude {
     pub use crate::error::RayError;
     pub use crate::object_ref::ObjectRef;
     pub use crate::runtime::{
-        ActorHandle, RayConfig, init, init_with_config, is_initialized,
+        ActorHandle, RayConfig, init, init_with_config,
         put, put_async, get, get_async, wait, shutdown,
     };
     pub use crate::serialize::{deserialize, deserialize_xlang, serialize};
     pub use crate::{
-        actor_call, actor_create, actor_kill, get_namespace,
+        actor_call, actor_create, actor_kill, get_namespace, get_actor, cancel, get_many,
         task_call, task_call_async, was_current_actor_restarted,
         task_call_python, actor_create_python, actor_call_python,
         placement_group_create, placement_group_remove,

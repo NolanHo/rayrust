@@ -98,6 +98,10 @@ extern "C" {
     // Misc
     pub fn ray_was_current_actor_restarted() -> bool;
     pub fn ray_get_namespace() -> RayBytes;
+    pub fn ray_get_actor(name: *const c_char, ray_namespace: *const c_char) -> RayBytes;
+    pub fn ray_cancel(id_data: *const c_char, id_len: usize, force_kill: bool, recursive: bool) -> c_int;
+    pub fn ray_get_many(ids: *const RayBytes, count: usize, timeout_ms: c_int) -> *mut RayBytes;
+    pub fn ray_free_bytes_array(array: *mut RayBytes, count: usize);
 
     // Async Get (CoreWorker::GetAsync + eventfd)
     // RayAsyncGet is an opaque C struct — we use c_void as the pointee.

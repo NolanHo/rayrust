@@ -509,6 +509,74 @@ ray_bytes_t ray_get_namespace(void) {
     return ray_bytes_t{nullptr, 0};
 }
 
+ray_bytes_t ray_get_actor(const char *name, const char *ray_namespace) {
+    try {
+        auto runtime = ray::internal::GetRayRuntime();
+        if (!runtime) return ray_bytes_t{nullptr, 0};
+
+        std::string ns_str = ray_namespace ? std::string(ray_namespace) : "";
+        std::string actor_id = runtime->GetActorId(std::string(name), ns_str);
+        if (actor_id.empty()) return ray_bytes_t{nullptr, 0};
+        return dup_bytes(actor_id);
+    } catch (const std::exception &e) {
+        fprintf(stderr, "ray_get_actor error: %s\n", e.what());
+        return ray_bytes_t{nullptr, 0};
+    }
+}
+
+int ray_cancel(const char *id_data, size_t id_len, bool force_kill, bool recursive) {
+    // CoreWorker::CancelTask is not directly exposed via RayRuntime.
+    // The C++ SDK doesn't have a Cancel method on RayRuntime.
+    // This requires calling CoreWorker directly — skip for now.
+    (void)id_data; (void)id_len; (void)force_kill; (void)recursive;
+    fprintf(stderr, "ray_cancel: not yet implemented (requires CoreWorker::CancelTask)\n");
+    return -1;
+}
+
+ray_bytes_t *ray_get_many(const ray_bytes_t *ids, size_t count, int timeout_ms) {
+    try {
+        auto runtime = ray::internal::GetRayRuntime();
+        if (!runtime) return nullptr;
+
+        std::vector<std::string> id_vec;
+        id_vec.reserve(count);
+        for (size_t i = 0; i < count; i++) {
+            id_vec.emplace_back(ids[i].data, ids[i].len);
+        }
+
+        auto results = runtime->Get(id_vec, timeout_ms);
+
+        auto *out = static_cast<ray_bytes_t *>(std::malloc(count * sizeof(ray_bytes_t)));
+        if (!out) return nullptr;
+
+        for (size_t i = 0; i < count && i < results.size(); i++) {
+            if (results[i]) {
+                char *data = static_cast<char *>(std::malloc(results[i]->size()));
+                if (data) {
+                    std::memcpy(data, results[i]->data(), results[i]->size());
+                    out[i] = ray_bytes_t{data, results[i]->size()};
+                } else {
+                    out[i] = ray_bytes_t{nullptr, 0};
+                }
+            } else {
+                out[i] = ray_bytes_t{nullptr, 0};
+            }
+        }
+        return out;
+    } catch (const std::exception &e) {
+        fprintf(stderr, "ray_get_many error: %s\n", e.what());
+        return nullptr;
+    }
+}
+
+void ray_free_bytes_array(ray_bytes_t *array, size_t count) {
+    if (!array) return;
+    for (size_t i = 0; i < count; i++) {
+        if (array[i].data) std::free(const_cast<char *>(array[i].data));
+    }
+    std::free(array);
+}
+
 // ─── Memory Management ────────────────────────────────────────
 
 void ray_free_bytes(ray_bytes_t *ptr) {

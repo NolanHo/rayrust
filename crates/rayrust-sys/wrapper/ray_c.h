@@ -144,6 +144,27 @@ bool ray_was_current_actor_restarted(void);
 /// Returns a ray_bytes_t containing the namespace string.
 ray_bytes_t ray_get_namespace(void);
 
+/// Get a named actor by name.
+/// `name` is the actor name. `namespace` can be NULL for current namespace.
+/// Returns a ray_bytes_t containing the binary actor ID, or data=NULL if not found.
+ray_bytes_t ray_get_actor(const char *name, const char *ray_namespace);
+
+/// Cancel a remote task by object ID.
+/// `force_kill` kills the worker if true. `recursive` cancels dependent tasks.
+/// Returns 0 on success, -1 on error.
+int ray_cancel(const char *id_data, size_t id_len, bool force_kill, bool recursive);
+
+/// Get multiple objects from the object store.
+/// `ids` is an array of ray_bytes_t. `count` is the number of IDs.
+/// `timeout_ms` is -1 for infinite wait.
+/// Returns a heap-allocated array of ray_bytes_t (one per input ID).
+/// On error for a specific ID, that element will have data=NULL.
+/// Caller must free each element with ray_free_bytes, then free the array.
+ray_bytes_t *ray_get_many(const ray_bytes_t *ids, size_t count, int timeout_ms);
+
+/// Free an array returned by ray_get_many.
+void ray_free_bytes_array(ray_bytes_t *array, size_t count);
+
 // ─── Function Registration ────────────────────────────────────
 
 /// Callback type for a Rust remote function.

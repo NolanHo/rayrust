@@ -31,8 +31,11 @@ typedef struct {
 /// Pass NULL or empty string for local mode.
 /// `node_ip` is the IP address of this node as seen by the cluster.
 ///   Pass NULL to auto-detect.
+/// `code_search_path` is a colon-separated list of directories or .so files
+///   for the worker to search for remote functions. Pass NULL to skip.
 /// Returns 0 on success, -1 on failure.
-int ray_init(const char *address, int local_mode, const char *node_ip);
+int ray_init(const char *address, int local_mode, const char *node_ip,
+             const char *code_search_path);
 
 /// Returns true if ray::Init has been called.
 bool ray_is_initialized(void);

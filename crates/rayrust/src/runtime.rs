@@ -52,6 +52,14 @@ impl RayConfig {
         self.node_ip = ip.into();
         self
     }
+
+    /// Set the code search path (directories or .so files for the worker).
+    /// On the C++ SDK side, paths are joined with ':' and passed as
+    /// `--ray_code_search_path`.
+    pub fn code_search_path(mut self, paths: Vec<String>) -> Self {
+        self.code_search_path = paths;
+        self
+    }
 }
 
 // ─── Lifecycle ────────────────────────────────────────────────
@@ -73,8 +81,16 @@ pub fn init_with_config(config: &RayConfig) -> Result<(), RayError> {
     let address_c = to_cstring(&config.address);
     let local_mode = if config.local_mode { 1 } else { 0 };
     let node_ip_c = to_cstring(&config.node_ip);
+    let code_search_path_c = to_cstring(&config.code_search_path.join(":"));
 
-    let ret = unsafe { rayrust_sys::ray_init(address_c.as_ptr(), local_mode, node_ip_c.as_ptr()) };
+    let ret = unsafe {
+        rayrust_sys::ray_init(
+            address_c.as_ptr(),
+            local_mode,
+            node_ip_c.as_ptr(),
+            code_search_path_c.as_ptr(),
+        )
+    };
     if ret != 0 {
         return Err(RayError::Runtime(format!(
             "ray_init failed (code {})",

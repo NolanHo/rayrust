@@ -14,6 +14,20 @@
 #include <ray/api/ray_runtime_holder.h>
 #include <ray/api/serializer.h>
 #include <ray/api/function_manager.h>
+#include <ray/api/internal_api.h>
+
+// Declare the exported function from libray_api.so.
+// This returns the SAME FunctionManager singleton that the worker uses,
+// avoiding the "singleton split" problem where FunctionManager::Instance()
+// in our translation unit creates a separate instance from the one in libray_api.so.
+//
+// IMPORTANT: Do NOT use extern "C" here. GetFunctionManager is a C++ function.
+// With extern "C", the linker resolves the symbol to the BOOST_DLL_ALIAS
+// variable (V type, in .data section), not the actual function (T type, in .text).
+// Calling a data address as code → SIGSEGV.
+namespace ray { namespace internal {
+    FunctionManager &GetFunctionManager();
+}}
 
 #include <cstring>
 #include <msgpack.hpp>
@@ -25,14 +39,19 @@
 // ─── Function Registration ────────────────────────────────────
 
 // Global map of Rust function callbacks, indexed by function name.
-// The C++ lambda in FunctionManager captures the function name and
-// looks up the callback here.
-static std::unordered_map<std::string, ray_func_callback_t> g_rust_functions;
+// Uses a function-local static to guarantee initialization order:
+// the map is constructed on first call, which is always before any
+// #[ctor] registration (which calls ray_register_function).
+static std::unordered_map<std::string, ray_func_callback_t> &get_rust_functions() {
+    static std::unordered_map<std::string, ray_func_callback_t> map;
+    return map;
+}
 
 static msgpack::sbuffer invoke_rust_function(const std::string &func_name,
                                               const ray::internal::ArgsBufferList &args_buffer) {
-    auto it = g_rust_functions.find(func_name);
-    if (it == g_rust_functions.end()) {
+    auto &fns = get_rust_functions();
+    auto it = fns.find(func_name);
+    if (it == fns.end()) {
         throw std::runtime_error("Rust function not found: " + func_name);
     }
 
@@ -56,12 +75,14 @@ static msgpack::sbuffer invoke_rust_function(const std::string &func_name,
 
 void ray_register_function(const char *func_name, ray_func_callback_t callback) {
     std::string name(func_name);
-    g_rust_functions[name] = callback;
+    auto &fns = get_rust_functions();
+    fns[name] = callback;
 
-    // Register with FunctionManager. GetRemoteFunctions() returns const refs
-    // to the internal maps, but the underlying maps are non-const members.
-    // We const_cast to get mutable access and insert our callback.
-    auto &fm = ray::internal::FunctionManager::Instance();
+    // Use the exported GetFunctionManager() from libray_api.so instead of
+    // FunctionManager::Instance(). The inline Instance() in our translation unit
+    // would create a separate singleton from the one in libray_api.so,
+    // causing a "singleton split" where registrations are invisible to the worker.
+    auto &fm = ray::internal::GetFunctionManager();
     auto [map_ref, _] = fm.GetRemoteFunctions();
     auto &map = const_cast<ray::internal::RemoteFunctionMap_t &>(map_ref);
 
@@ -82,12 +103,29 @@ static ray_bytes_t dup_bytes(const std::string &s) {
 
 // ─── Lifecycle ────────────────────────────────────────────────
 
-int ray_init(const char *address, int local_mode, const char *node_ip) {
+int ray_init(const char *address, int local_mode, const char *node_ip,
+             const char *code_search_path) {
     ray::RayConfig config;
     if (address && address[0] != '\0') {
         config.address = address;
     }
     config.local_mode = local_mode != 0;
+
+    // Set code search path for worker to find .so with remote functions.
+    // The C++ SDK uses ':' as separator (like PATH).
+    if (code_search_path && code_search_path[0] != '\0') {
+        std::string paths(code_search_path);
+        size_t start = 0, end;
+        while ((end = paths.find(':', start)) != std::string::npos) {
+            if (end > start) {
+                config.code_search_path.push_back(paths.substr(start, end - start));
+            }
+            start = end + 1;
+        }
+        if (start < paths.size()) {
+            config.code_search_path.push_back(paths.substr(start));
+        }
+    }
 
     // Build argv to pass node_ip_address via command-line flags.
     int argc = 1;

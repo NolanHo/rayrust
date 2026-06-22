@@ -12,20 +12,25 @@ Rust SDK for [Ray](https://ray.io) distributed computing — wraps the Ray C++ S
 | `ray::put` / `ray::get` | ✅ | ✅ |
 | `ray::wait` | ✅ (API ready) | ✅ (API ready) |
 | `ray::get_namespace` | ✅ | ✅ |
-| `#[ray::remote]` task | ✅ `add(1,2)=3`, `greet("Ray")="Hello, Ray!"` | ⚠️ See below |
+| `#[ray::remote]` task | ✅ `add(1,2)=3`, `greet("Ray")="Hello, Ray!"` | ✅ `add(10,32)=42`, `multiply(7,6)=42` |
 | Actor | ⚠️ FFI ready, untested | ⚠️ FFI ready, untested |
 | Placement Group | ⚠️ FFI ready, untested | ⚠️ FFI ready, untested |
 
 ### Remote task in cluster mode
 
-Local mode works fully: `#[remote]` macro generates a C callback, registers it with `FunctionManager`, and the local runtime executes it directly.
+Cluster mode is **fully working**. The approach:
 
-In cluster mode, the driver submits the task by function name, but **execution happens in a separate worker process** started by Ray. The C++ worker loads functions from shared libraries (`.so`) registered via `RAY_REMOTE`. Rust functions compiled into the driver binary are not visible to the worker process.
+1. Compile Rust remote functions into a `cdylib` (`.so`) using `rayrust-example-worker` as a template
+2. `#[rayrust::remote]` generates a `#[ctor]` that auto-registers the function when the `.so` is loaded
+3. The driver passes the `.so` path via `code_search_path` in `RayConfig`
+4. The Ray worker process `dlopen`s the `.so`, `#[ctor]` fires, functions are registered in `FunctionManager`
+5. Worker calls `GetRemoteFunctions()` → finds the Rust functions → executes them
 
-**Workarounds** (planned for future iteration):
-- Compile Rust remote functions into a C-compatible `.so` that the worker can load
-- Use cross-language calls: `ray::task_python("module", "func")` to invoke Python functions
-- Implement a native Rust worker that registers functions at startup
+Key implementation details:
+- **`#[ctor]` auto-registration**: Functions are registered at `.so` load time, before the worker calls `GetRemoteFunctions()`
+- **`GetFunctionManager()` not `FunctionManager::Instance()`**: The inline `Instance()` creates a separate singleton per translation unit. Using the exported `GetFunctionManager()` from `libray_api.so` ensures the worker sees our registrations.
+- **`--no-as-needed` linker flag**: Forces `libray_api.so` into the `.so`'s NEEDED list so `boost::dll` can find `TaskExecutionHandler` etc. transitively
+- **Meyers singleton for `g_rust_functions`**: Function-local static avoids the "static initialization order fiasco" — `#[ctor]` may fire before global constructors
 
 ## Architecture
 
@@ -184,7 +189,7 @@ rayrust/
 
 ## Known limitations
 
-1. **Remote tasks in cluster mode**: The `#[ray::remote]` macro generates a C callback and registers it with `FunctionManager` in the **driver process**. In local mode, the driver IS the worker, so it works. In cluster mode, the task executes in a **separate worker process** started by Ray, which loads functions from C++ shared libraries (`.so` with `RAY_REMOTE`). Rust functions in the driver binary are not visible to the worker. See "Remote task in cluster mode" above.
+1. **Remote tasks in cluster mode**: ✅ **Solved!** Rust functions compiled into a `cdylib` `.so` are auto-registered via `#[ctor]` when the Ray worker loads the `.so`. See `rayrust-example-worker` crate and `cluster_remote_task` example.
 2. **C++ SDK feature ceiling**: This SDK wraps the C++ SDK, so it inherits its limitations. No Ray Serve, Ray Train, Ray Tune, or RLlib.
 3. **Synchronous API**: `get()` blocks. Async wrappers (tokio) are planned.
 4. **Cross-language calls**: FFI layer supports calling Python/Java tasks, but not yet exposed in the safe API.

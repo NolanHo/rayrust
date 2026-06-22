@@ -4,4 +4,5 @@ members = [
     "crates/rayrust-sys",
     "crates/rayrust-macros",
     "crates/rayrust",
+    "crates/rayrust-example-worker",
 ]

@@ -37,12 +37,13 @@ fn main() {
 
     let wrapper_dir = PathBuf::from("wrapper");
 
-    // ── Compile the C ABI wrapper (.cc) ────────────────────────
+    // ── Compile the C ABI wrapper (.cc) + worker export ────────
     let mut build = cc::Build::new();
     build
         .cpp(true)
         .std("c++17")
         .file(wrapper_dir.join("ray_c.cc"))
+        .file(wrapper_dir.join("ray_worker_export.cc"))
         .include(wrapper_dir);
 
     if !ray_cpp_dir.is_empty() {
@@ -69,4 +70,5 @@ fn main() {
     // ── Tell cargo where to find the wrapper header ─────────────
     println!("cargo:rerun-if-changed=wrapper/ray_c.h");
     println!("cargo:rerun-if-changed=wrapper/ray_c.cc");
+    println!("cargo:rerun-if-changed=wrapper/ray_worker_export.cc");
 }

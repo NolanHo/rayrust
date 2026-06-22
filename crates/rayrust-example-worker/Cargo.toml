@@ -1,0 +1,13 @@
+[package]
+name = "rayrust-example-worker"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+name = "rayrust_worker"
+
+[dependencies]
+rayrust = { path = "../rayrust" }
+rayrust-sys = { path = "../rayrust-sys" }
+serde = { version = "1.0", features = ["derive"] }

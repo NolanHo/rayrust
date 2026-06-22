@@ -31,6 +31,9 @@ pub mod serialize;
 /// Re-export of the raw FFI crate for macro-generated code.
 pub use rayrust_sys as sys;
 
+/// Re-export ctor for macro-generated code.
+pub use ctor;
+
 pub use error::RayError;
 pub use object_ref::ObjectRef;
 pub use runtime::{

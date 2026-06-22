@@ -21,7 +21,12 @@ pub struct RayBytes {
 
 extern "C" {
     // Lifecycle
-    pub fn ray_init(address: *const c_char, local_mode: c_int, node_ip: *const c_char) -> c_int;
+    pub fn ray_init(
+        address: *const c_char,
+        local_mode: c_int,
+        node_ip: *const c_char,
+        code_search_path: *const c_char,
+    ) -> c_int;
     pub fn ray_is_initialized() -> bool;
     pub fn ray_shutdown();
 

@@ -244,6 +244,14 @@ build_task_args_cpp(const ray_bytes_t *args, size_t arg_count) {
 }
 
 /// Helper: build TaskArg vector for Python tasks (xlang wrapped).
+/// Args from Rust are ALREADY msgpack-serialized by rmp-serde.
+/// We must NOT call Serializer::Serialize on them again — that would
+/// wrap the data in pack_bin/bin8, which Python's msgpack.unpackb
+/// cannot decode (expects the original msgpack type markers).
+///
+/// XLANG format per C++ SDK's Arguments::WrapArgsImpl:
+///   [dummy_kwargs (RAW metadata)]  +  [xlang_header + raw_data (XLANG metadata)]
+/// where xlang_header = [msgpack_int(data_len)] [zero_padding to XLANG_HEADER_LEN]
 static std::vector<ray::internal::TaskArg>
 build_task_args_python(const ray_bytes_t *args, size_t arg_count) {
     std::vector<ray::internal::TaskArg> task_args;
@@ -258,19 +266,18 @@ build_task_args_python(const ray_bytes_t *args, size_t arg_count) {
         task_args.push_back(std::move(dummy));
 
         // 2. Data with xlang header
-        //    Format: [data_len (msgpack int)] [padding to XLANG_HEADER_LEN] [data]
-        //    Use Serialize(const char*, size_t) which does pack_bin — NOT
-        //    Serialize(string) which does pack(str) and breaks Python deserialization.
-        auto data_buf = ray::internal::Serializer::Serialize(args[i].data, args[i].len);
-        auto len_buf = ray::internal::Serializer::Serialize(data_buf.size());
+        //    data_len encoded as msgpack int, then zero-padded to XLANG_HEADER_LEN
+        //    Then raw msgpack bytes (already serialized by Rust's rmp-serde)
+        auto len_buf = ray::internal::Serializer::Serialize(args[i].len);
 
         ray::internal::TaskArg xlang_arg;
-        xlang_arg.buf = msgpack::sbuffer(ray::internal::XLANG_HEADER_LEN + data_buf.size());
+        xlang_arg.buf = msgpack::sbuffer(ray::internal::XLANG_HEADER_LEN + args[i].len);
         xlang_arg.buf->write(len_buf.data(), len_buf.size());
         for (size_t j = len_buf.size(); j < ray::internal::XLANG_HEADER_LEN; ++j) {
             xlang_arg.buf->write("", 1);
         }
-        xlang_arg.buf->write(data_buf.data(), data_buf.size());
+        // Write raw msgpack bytes directly — no Serializer::Serialize wrapping
+        xlang_arg.buf->write(args[i].data, args[i].len);
         xlang_arg.meta_str = ray::internal::METADATA_STR_XLANG;
         task_args.push_back(std::move(xlang_arg));
     }
@@ -437,6 +444,9 @@ void ray_actor_kill(const char *actor_id_data, size_t actor_id_len, bool no_rest
 
 // ─── Placement Group ──────────────────────────────────────────
 
+// nlohmann/json is shipped with the Ray C++ SDK headers.
+#include <nlohmann/json.hpp>
+
 ray_bytes_t ray_placement_group_create(const char *name,
                                         const char *bundles_json,
                                         int strategy) {
@@ -447,6 +457,19 @@ ray_bytes_t ray_placement_group_create(const char *name,
         ray::PlacementGroupCreationOptions options;
         if (name) options.name = name;
         options.strategy = static_cast<ray::PlacementStrategy>(strategy);
+
+        // Parse bundles from JSON: [{"CPU": 1}, {"GPU": 1}]
+        if (bundles_json && bundles_json[0] != '\0') {
+            using json = nlohmann::json;
+            auto j = json::parse(std::string(bundles_json));
+            for (auto &bundle : j) {
+                std::unordered_map<std::string, double> resources;
+                for (auto it = bundle.begin(); it != bundle.end(); ++it) {
+                    resources[it.key()] = it.value().get<double>();
+                }
+                options.bundles.push_back(resources);
+            }
+        }
 
         auto group = runtime->CreatePlacementGroup(options);
         return dup_bytes(group.GetID());

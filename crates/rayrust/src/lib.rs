@@ -25,10 +25,22 @@ pub use runtime::{
     get_namespace, init, init_with_config, is_initialized, put, put_async, get, get_async, wait,
     was_current_actor_restarted, shutdown, ActorHandle, RayConfig,
 };
-pub use serialize::{deserialize, serialize};
+pub use serialize::{deserialize, deserialize_xlang, serialize};
 
 /// Re-export the proc macro.
 pub use rayrust_macros::remote;
+
+/// Create a placement group.
+/// `bundles_json` is a JSON array like `[{"CPU":1},{"CPU":1}]`.
+/// `strategy` is 0=PACK, 1=SPREAD, 2=STRICT_PACK, 3=STRICT_SPREAD.
+pub fn placement_group_create(name: &str, bundles_json: &str, strategy: i32) -> Result<Vec<u8>, RayError> {
+    crate::runtime::placement_group_create_inner(name, bundles_json, strategy)
+}
+
+/// Remove a placement group by binary ID.
+pub fn placement_group_remove(group_id: &[u8]) {
+    crate::runtime::placement_group_remove_inner(group_id);
+}
 
 // ─── Task / Actor convenience wrappers (crate root) ───────────
 
@@ -83,11 +95,12 @@ pub mod prelude {
         ActorHandle, RayConfig, init, init_with_config, is_initialized,
         put, put_async, get, get_async, wait, shutdown,
     };
-    pub use crate::serialize::{deserialize, serialize};
+    pub use crate::serialize::{deserialize, deserialize_xlang, serialize};
     pub use crate::{
         actor_call, actor_create, actor_kill, get_namespace,
         task_call, task_call_async, was_current_actor_restarted,
         task_call_python, actor_create_python, actor_call_python,
+        placement_group_create, placement_group_remove,
     };
     pub use rayrust_macros::remote;
 }

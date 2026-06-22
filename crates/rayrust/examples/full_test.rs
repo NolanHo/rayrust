@@ -1,9 +1,4 @@
-//! Comprehensive test: wait, remote task, cross-language (Python), actor.
-//!
-//! Prerequisites:
-//! 1. Build worker: cargo build --release -p rayrust-example-worker
-//! 2. Copy rayrust_test.py to Python path on the worker node
-//! 3. Set env vars: RAY_ADDRESS, RAY_NODE_IP, RAY_WORKER_SO
+//! Comprehensive test: wait, remote task, cross-language (Python), actor, placement group.
 
 use rayrust::prelude::*;
 
@@ -48,15 +43,17 @@ async fn main() {
 
     // ── 3. Cross-language: Python Task ──────────────────────
     println!("\n--- 3. Cross-language: Python Task ---");
-    // Python task submission works. Result deserialization is limited
-    // (Python uses its own serialization format, not pure msgpack).
     let arg_a = rayrust::serialize(&5i64).unwrap();
     let arg_b = rayrust::serialize(&3i64).unwrap();
     let args: Vec<&[u8]> = vec![&arg_a, &arg_b];
 
     match rayrust::task_call_python("rayrust_test", "add", &args) {
         Ok(obj_ref) => {
-            println!("Python add(5, 3) task submitted ✓ (ObjectRef id_len={})", obj_ref.id().len());
+            println!("Python add(5, 3) task submitted ✓");
+            // Python result has xlang header — direct get_async won't strip it.
+            // The xlang result deserialization requires raw bytes access
+            // which is available via deserialize_xlang().
+            println!("  (xlang result deserialization available via deserialize_xlang)");
         }
         Err(e) => println!("Python task_call failed: {}", e),
     }
@@ -70,17 +67,13 @@ async fn main() {
         Ok(actor) => {
             println!("Python Counter actor created ✓");
 
-            // Call actor.increment(5) — test submission
             let arg_n = rayrust::serialize(&5i64).unwrap();
             let args_inc: Vec<&[u8]> = vec![&arg_n];
             match rayrust::actor_call_python(actor.id(), "increment", &args_inc) {
-                Ok(obj_ref) => {
-                    println!("Counter.increment(5) submitted ✓ (ObjectRef id_len={})", obj_ref.id().len());
-                }
+                Ok(_) => println!("Counter.increment(5) submitted ✓"),
                 Err(e) => println!("Counter.increment failed: {}", e),
             }
 
-            // Kill actor
             actor.kill(true);
             println!("Counter killed ✓");
         }
@@ -89,7 +82,15 @@ async fn main() {
 
     // ── 5. Placement Group ──────────────────────────────────
     println!("\n--- 5. Placement Group ---");
-    println!("(PlacementGroup API is ready but needs bundles JSON parsing — skipped)");
+    let bundles_json = r#"[{"CPU": 1}, {"CPU": 1}]"#;
+    match rayrust::placement_group_create("test_pg", bundles_json, 0) {
+        Ok(pg_id) => {
+            println!("PlacementGroup created ✓ (id_len={})", pg_id.len());
+            rayrust::placement_group_remove(&pg_id);
+            println!("PlacementGroup removed ✓");
+        }
+        Err(e) => println!("PlacementGroup create failed: {}", e),
+    }
 
     // ── Shutdown ────────────────────────────────────────────
     println!("\n--- Shutdown ---");

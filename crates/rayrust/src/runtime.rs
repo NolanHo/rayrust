@@ -436,6 +436,40 @@ pub(crate) fn actor_kill_inner(actor_id: &[u8], no_restart: bool) {
     };
 }
 
+// ─── Placement Group ──────────────────────────────────────────
+
+/// Create a placement group.
+/// `bundles_json` is a JSON array like `[{"CPU":1},{"CPU":1}]`.
+/// `strategy` is 0=PACK, 1=SPREAD, 2=STRICT_PACK, 3=STRICT_SPREAD.
+pub(crate) fn placement_group_create_inner(
+    name: &str,
+    bundles_json: &str,
+    strategy: i32,
+) -> Result<Vec<u8>, RayError> {
+    let name_c = to_cstring(name);
+    let json_c = to_cstring(bundles_json);
+    let bytes = unsafe {
+        rayrust_sys::ray_placement_group_create(
+            name_c.as_ptr(),
+            json_c.as_ptr(),
+            strategy,
+        )
+    };
+    let guard = CBytesGuard::from(bytes)
+        .ok_or_else(|| RayError::Ffi("ray_placement_group_create returned null".into()))?;
+    Ok(guard.as_slice().to_vec())
+}
+
+/// Remove a placement group by binary ID.
+pub(crate) fn placement_group_remove_inner(group_id: &[u8]) {
+    unsafe {
+        rayrust_sys::ray_placement_group_remove(
+            group_id.as_ptr() as *const std::os::raw::c_char,
+            group_id.len(),
+        )
+    };
+}
+
 // ─── Misc ─────────────────────────────────────────────────────
 
 /// Returns true if the current actor was restarted.

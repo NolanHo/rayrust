@@ -8,6 +8,9 @@
 //! - A `{name}_remote()` sync caller
 //! - A `{name}_remote_async()` async caller (tokio)
 //! - A `#[ctor]` auto-registration that runs when the .so is loaded by the Ray worker
+//!
+//! Supports both sync `fn` and `async fn`. For `async fn`, the callback
+//! uses a tokio runtime to execute the future and block until completion.
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
@@ -29,6 +32,9 @@ pub fn remote(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let sig = &input_fn.sig;
     let inputs = &sig.inputs;
     let output = &sig.output;
+
+    // Detect if the function is async
+    let is_async = sig.asyncness.is_some();
 
     // Extract argument names and types
     let arg_data: Vec<(syn::Pat, syn::Type)> = inputs
@@ -56,11 +62,31 @@ pub fn remote(_attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    // The return type
+    // The return type (strip `async` — the actual return type is the inner type of the Future)
     let return_type: proc_macro2::TokenStream = match output {
         ReturnType::Default => quote! { () },
         ReturnType::Type(_, ty) => quote! { #ty },
     };
+
+    // The call expression: sync vs async
+    let call_expr = if is_async {
+        quote! {
+            // For async fn, we need a tokio runtime to block on the future.
+            let rt = ::tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to create tokio runtime for async remote fn");
+            rt.block_on(#fn_name(#(#arg_names),*))
+        }
+    } else {
+        quote! {
+            #fn_name(#(#arg_names),*)
+        }
+    };
+
+    // For async fn, we need to keep the original function as async, but also
+    // generate a sync wrapper for the callback. The caller functions (_remote, _remote_async)
+    // stay the same — they just submit the task, the execution happens in the callback.
 
     let expanded = quote! {
         // Keep the original function unchanged
@@ -91,7 +117,7 @@ pub fn remote(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             let result = {
                 #( #arg_deserialize )*
-                #fn_name(#(#arg_names),*)
+                #call_expr
             };
 
             let result_bytes = ::rayrust::serialize(&result)

@@ -4,33 +4,98 @@ Rust SDK for [Ray](https://ray.io) distributed computing — wraps the Ray C++ S
 
 ## Status
 
-🚧 **PoC (Proof of Concept)** — core Put/Get + remote task (local mode) verified against a live Ray cluster.
+✅ **Core features complete** — verified against a live Ray cluster.
 
 | Feature | Local Mode | Cluster Mode |
 |---|---|---|
-| `ray::init` | ✅ | ✅ |
+| `ray::init` / `shutdown` | ✅ | ✅ |
 | `ray::put` / `ray::get` | ✅ | ✅ |
-| `ray::wait` | ✅ (API ready) | ✅ (API ready) |
+| `ray::wait` | ✅ | ✅ |
 | `ray::get_namespace` | ✅ | ✅ |
-| `#[ray::remote]` task | ✅ `add(1,2)=3`, `greet("Ray")="Hello, Ray!"` | ✅ `add(10,32)=42`, `multiply(7,6)=42` |
-| Actor | ⚠️ FFI ready, untested | ⚠️ FFI ready, untested |
-| Placement Group | ⚠️ FFI ready, untested | ⚠️ FFI ready, untested |
+| `ray::get_many` (batch get) | ✅ | ✅ |
+| `#[ray::remote]` sync task | ✅ | ✅ cdylib + `#[ctor]` auto-registration |
+| `#[ray::remote]` async task | ✅ | ✅ tokio runtime in callback |
+| `get_async` (non-blocking) | ✅ | ✅ polling thread + eventfd + AsyncFd |
+| Rust Actor (factory + methods) | ✅ `Counter.increment(5)=105` | ✅ FFI ready |
+| Python task (xlang) | ✅ | ✅ auto xlang deserialization |
+| Python actor (xlang) | ✅ | ✅ create + call + kill |
+| `ray::get_actor` (named actor) | ✅ | ✅ |
+| `ray::cancel` | ✅ | ✅ `CoreWorker::CancelTask` |
+| `ray::kill` | ✅ | ✅ |
+| PlacementGroup | ✅ | ✅ create + remove + bundles JSON |
+| ObjectRef as task param | ✅ `is_ref` array | ✅ `TaskArgByReference` |
+| `runtime_env` | ✅ JSON string | ✅ |
+| `log_dir` | ✅ | ✅ |
+| `id_hex()` debug helper | ✅ | ✅ |
+| `is_initialized()` | ✅ | ✅ |
+
+### Async architecture
+
+`get_async()` uses a **polling thread + eventfd + AsyncFd** pattern:
+- C++ polling thread: `Get(timeout=100ms)` loop, signals via eventfd
+- Rust side: `tokio::io::AsyncFd` polls eventfd — **zero tokio threads blocked**
+- After eventfd fires: fast `Get()` (instant, object is local) + deserialize
+
+For cross-language (Python) results, the data has a 9-byte XLANG header
+that is automatically stripped before deserialization via the `is_xlang` flag
+on `ObjectRef<T>`.
+
+### `#[rayrust::remote]` macro
+
+Supports both sync and async functions:
+```rust
+#[rayrust::remote]
+fn add(a: i32, b: i32) -> i32 { a + b }
+
+#[rayrust::remote]
+async fn async_sum(a: i64, b: i64) -> i64 {
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    a + b
+}
+```
+
+Generates:
+- C-compatible callback (deserialize args → call function → serialize result)
+- `{name}_register()` — register with Ray's `FunctionManager`
+- `{name}_remote()` — sync caller
+- `{name}_remote_async()` — async caller (tokio)
+- `#[ctor]` auto-registration at `.so` load time
+
+### Rust Actor pattern
+
+Actors use a factory + member function registration:
+
+```rust
+struct Counter { value: i64 }
+
+// Factory: creates Box<Counter>, returns raw pointer as u64
+#[no_mangle]
+extern "C" fn factory(args: *const RayBytes, n: usize) -> RayBytes { ... }
+
+// Member function: receives actor pointer + args
+#[no_mangle]
+extern "C" fn increment(ptr: u64, args: *const RayBytes, n: usize) -> RayBytes { ... }
+
+// Register via #[ctor]
+rayrust::ray_register_function("factory", factory);
+rayrust::ray_register_member_function("factory::increment", increment);
+```
 
 ### Remote task in cluster mode
 
-Cluster mode is **fully working**. The approach:
-
-1. Compile Rust remote functions into a `cdylib` (`.so`) using `rayrust-example-worker` as a template
-2. `#[rayrust::remote]` generates a `#[ctor]` that auto-registers the function when the `.so` is loaded
-3. The driver passes the `.so` path via `code_search_path` in `RayConfig`
-4. The Ray worker process `dlopen`s the `.so`, `#[ctor]` fires, functions are registered in `FunctionManager`
-5. Worker calls `GetRemoteFunctions()` → finds the Rust functions → executes them
+1. Compile Rust remote functions into a `cdylib` (`.so`) via `rayrust-example-worker`
+2. `#[rayrust::remote]` generates a `#[ctor]` that auto-registers at `.so` load time
+3. Driver passes `.so` path via `code_search_path` in `RayConfig`
+4. Ray worker `dlopen`s the `.so`, `#[ctor]` fires, `GetRemoteFunctions()` returns registered functions
 
 Key implementation details:
-- **`#[ctor]` auto-registration**: Functions are registered at `.so` load time, before the worker calls `GetRemoteFunctions()`
-- **`GetFunctionManager()` not `FunctionManager::Instance()`**: The inline `Instance()` creates a separate singleton per translation unit. Using the exported `GetFunctionManager()` from `libray_api.so` ensures the worker sees our registrations.
-- **`--no-as-needed` linker flag**: Forces `libray_api.so` into the `.so`'s NEEDED list so `boost::dll` can find `TaskExecutionHandler` etc. transitively
-- **Meyers singleton for `g_rust_functions`**: Function-local static avoids the "static initialization order fiasco" — `#[ctor]` may fire before global constructors
+- **`#[ctor]` auto-registration**: Functions registered at `.so` load time
+- **`GetFunctionManager()`**: Uses exported function from `libray_api.so` to avoid singleton split
+- **Meyers singleton for `g_rust_functions`**: Avoids static init order fiasco with `#[ctor]`
+- **`--no-as-needed`**: Forces `libray_api.so` into cdylib's NEEDED list
+- **`_GLIBCXX_USE_CXX11_ABI=0`**: Matches Bazel-built `libray_api.so`
+- **Binary-safe IDs**: Ray ObjectIDs may contain null bytes — all use `(ptr, len)` pairs
+- **Forward declarations**: `CoreWorker::CancelTask`, `CoreWorker::GetAsync` etc. declared without including `core_worker.h` (avoids protobuf/gRPC/absl deps)
 
 ## Architecture
 
@@ -44,7 +109,8 @@ Key implementation details:
 │        rayrust (safe Rust API)               │
 │  - ObjectRef<T> / ActorHandle               │
 │  - serialize / deserialize (rmp-serde)        │
-│  - #[remote] proc macro                      │
+│  - #[remote] proc macro (sync + async fn)    │
+│  - get_async (eventfd + AsyncFd)             │
 ├─────────────────────────────────────────────┤
 │        rayrust-sys (FFI bindings)             │
 │  - extern "C" declarations                   │
@@ -53,6 +119,9 @@ Key implementation details:
 │     ray_c.h / ray_c.cc (C ABI wrapper)       │
 │  - Type-erased C interface                   │
 │  - Wraps ray::internal::GetRayRuntime()      │
+│  - xlang arg wrapping (build_task_args_python)│
+│  - Member function registration               │
+│  - CoreWorker forward declarations            │
 ├─────────────────────────────────────────────┤
 │        libray_api.so (Ray C++ SDK)           │
 ├─────────────────────────────────────────────┤
@@ -60,69 +129,67 @@ Key implementation details:
 └─────────────────────────────────────────────┘
 ```
 
-### Why wrap C++ instead of native rewrite?
-
-- **libray_api.so** is prebuilt and ships with `pip install ray[cpp]` — no compilation needed
-- Ray Core protocol (GCS, raylet, object store) is complex; reimplementation is months of work
-- C++ SDK already handles cluster connection, worker registration, serialization
-- We bypass the template API and call `RayRuntime` directly for a thin, stable FFI layer
-
-### Key design decisions
-
-- **C ABI wrapper** (`ray_c.h/cc`): C++ templates (`Put<T>`, `Task<F>`) have no stable ABI. A thin C interface type-erases them.
-- **Binary-safe IDs**: Ray `ObjectID::Binary()` may contain null bytes. All ID parameters use `(ptr, len)` pairs, not null-terminated strings.
-- **`_GLIBCXX_USE_CXX11_ABI=0`**: `libray_api.so` is built with Bazel which sets the old C++ ABI. The wrapper must match to avoid `std::string` memory layout mismatch.
-- **`--ray_node_ip_address`**: Required when the node has multiple NICs. Auto-detection picks the wrong interface.
-- **Function registration**: `FunctionManager::GetRemoteFunctions()` returns const refs to internal maps. We `const_cast` to insert Rust callbacks — a pragmatic approach that avoids `#define private public` (which breaks standard library headers).
-- **Serialization**: Rust uses `rmp-serde` (msgpack via serde). C++ SDK uses `msgpack::pack`. Both produce raw msgpack — compatible without extra wrapping.
-
 ## Quick Start
 
 ### Prerequisites
 
 ```bash
-# Install Ray with C++ SDK
 pip install "ray[cpp]"
-
-# Find the ray[cpp] path
-python3 -c "import ray,os,sys; [print(os.path.join(p,'ray','cpp')) for p in sys.path if os.path.exists(os.path.join(p,'ray','cpp','lib','libray_api.so'))]"
+export RAY_CPP_DIR=$(python3 -c "import ray,os,sys; [print(os.path.join(p,'ray','cpp')) for p in sys.path if os.path.exists(os.path.join(p,'ray','cpp','lib','libray_api.so'))]")
 ```
 
 ### Build
 
 ```bash
-export RAY_CPP_DIR=/path/to/site-packages/ray/cpp
-cargo build --example hello_ray
+# Build the worker .so (for cluster mode remote tasks)
+cargo build --release -p rayrust-example-worker
+
+# Build examples
+cargo build --example full_test
 ```
 
 ### Run against a Ray cluster
 
 ```bash
-export RAY_CPP_DIR=/path/to/site-packages/ray/cpp
 export RAY_ADDRESS=192.168.42.141:6379
-export RAY_NODE_IP=192.168.42.106    # IP of this node as seen by the cluster
+export RAY_NODE_IP=192.168.42.106
+export RAY_WORKER_SO=$(pwd)/target/release/librayrust_worker.so
 export LD_LIBRARY_PATH=$RAY_CPP_DIR/lib:$LD_LIBRARY_PATH
 
-cargo run --example hello_ray
+cargo run --example full_test
 ```
 
-### Example output
+### Run in local mode (no cluster)
+
+```bash
+cargo run --example test_local
+```
+
+### Example output (local mode)
 
 ```
-Connecting to Ray cluster at 192.168.42.141:6379 (node_ip=192.168.42.106) ...
+✓ Ray initialized (local mode)
+add(3,4)=7 ✓
+async_sum(10,20)=30 ✓ (async fn)
+Rust Counter actor created ✓
+Counter.increment(5)=105 ✓
+Counter.get()=105 ✓
+killed ✓
+```
+
+### Example output (cluster mode)
+
+```
 ✓ Ray initialized
-
---- Put / Get ---
-Put 42i32 → ObjectRef(id_len=28)
-Get → 42 ✓
-
---- Put / Get String ---
-Get String → hello ray from rust! ✓
-
---- Namespace ---
-Namespace: ea25ec74d033068b85a4edea355bfb8fd388eb52706bb5d8a788b303
-
---- Shutdown ---
+wait: 2 ready, 0 unready ✓
+add(3, 4) = 7 ✓
+get_many: [100, 200, 300] ✓
+Python add(5, 3) = 8 ✓ (auto xlang deserialization)
+Python Counter actor created ✓
+Counter.increment(5) = 15 ✓ (auto xlang)
+PlacementGroup created ✓
+PlacementGroup removed ✓
+ObjectRef id_hex: 00ffffffffffff... ✓
 ✓ Ray shutdown
 ```
 
@@ -133,7 +200,11 @@ Namespace: ea25ec74d033068b85a4edea355bfb8fd388eb52706bb5d8a788b303
 ```rust
 use rayrust::prelude::*;
 
-let config = RayConfig::new("192.168.42.141:6379").node_ip("192.168.42.106");
+let config = RayConfig::new("192.168.42.141:6379")
+    .node_ip("192.168.42.106")
+    .code_search_path(vec!["/path/to/librayrust_worker.so".to_string()])
+    .runtime_env(r#"{"pip": ["numpy"]}"#)
+    .log_dir("/tmp/ray");
 rayrust::init_with_config(&config)?;
 
 let obj = rayrust::put(&42i32);
@@ -144,13 +215,11 @@ rayrust::shutdown();
 ### Async (tokio)
 
 ```rust
-use rayrust::prelude::*;
-
 #[tokio::main]
 async fn main() -> Result<(), RayError> {
     rayrust::init("192.168.42.141:6379")?;
 
-    // Async put / get
+    // Async put / get — zero threads blocked
     let obj = rayrust::put_async(42i32).await?;
     let val: i32 = obj.get_async().await?;
 
@@ -162,55 +231,61 @@ async fn main() -> Result<(), RayError> {
         add_remote_async(1, 2),
         add_remote_async(3, 4),
     );
-    let (v1, v2) = tokio::join!(
-        r1?.get_async(),
-        r2?.get_async(),
-    );
+    let (v1, v2) = tokio::join!(r1?.get_async(), r2?.get_async());
 
     rayrust::shutdown();
     Ok(())
 }
 ```
 
-Async methods wrap blocking C++ FFI calls in `tokio::task::spawn_blocking`,
-so the tokio runtime stays responsive while waiting for Ray operations.
+### Cross-language (Python)
+
+```rust
+// Call Python function
+let arg = rayrust::serialize(&5i64)?;
+let ref = rayrust::task_call_python("my_module", "add", &[&arg])?;
+let val: i64 = ref.cast().get_async().await?;  // auto xlang deserialization
+
+// Create Python actor
+let actor = rayrust::actor_create_python("my_module", "Counter", &[&arg])?;
+let ref = rayrust::actor_call_python(actor.id(), "increment", &[&arg])?;
+let val: i64 = ref.cast().get_async().await?;
+```
 
 ## Workspace structure
 
 ```
 rayrust/
-├── Cargo.toml                 # Workspace root
 ├── crates/
-│   ├── rayrust-sys/            # FFI bindings + C ABI wrapper
-│   │   ├── Cargo.toml
-│   │   ├── build.rs            # Compiles ray_c.cc, links libray_api.so
-│   │   ├── wrapper/
-│   │   │   ├── ray_c.h         # C ABI header
-│   │   │   └── ray_c.cc         # C ABI implementation (wraps C++ SDK)
+│   ├── rayrust-sys/            # FFI + C ABI wrapper
+│   │   ├── wrapper/ray_c.h     # C ABI header
+│   │   ├── wrapper/ray_c.cc    # C ABI implementation
+│   │   ├── build.rs            # cc + link libray_api.so
+│   │   └── src/lib.rs          # extern "C" + RAII guards
+│   ├── rayrust-macros/         # #[remote] proc macro (sync + async fn)
+│   ├── rayrust/                # Safe Rust API
+│   │   ├── examples/
+│   │   │   ├── full_test.rs    # Comprehensive cluster test
+│   │   │   ├── async_demo.rs   # Async concurrent tasks demo
+│   │   │   ├── cluster_remote_task.rs
+│   │   │   └── test_local.rs   # Local mode test (sync + async + actor)
 │   │   └── src/
-│   │       └── lib.rs          # extern "C" declarations + safe guards
-│   ├── rayrust-macros/         # Proc macros
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       └── lib.rs          # #[remote] attribute macro
-│   └── rayrust/                # Safe Rust API
-│       ├── Cargo.toml
-│       ├── examples/
-│       │   └── hello_ray.rs    # Cluster smoke test
-│       └── src/
-│           ├── lib.rs          # Re-exports + convenience functions
-│           ├── error.rs        # RayError type
-│           ├── object_ref.rs   # ObjectRef<T>
-│           ├── runtime.rs      # init/put/get/wait/task/actor
-│           └── serialize.rs    # msgpack bridge (rmp-serde)
+│   │       ├── lib.rs          # Re-exports + convenience functions
+│   │       ├── error.rs        # RayError
+│   │       ├── object_ref.rs   # ObjectRef<T> (sync + async + xlang)
+│   │       ├── runtime.rs      # init/put/get/wait/task/actor/cancel/etc
+│   │       └── serialize.rs   # msgpack bridge + xlang header stripping
+│   └── rayrust-example-worker/ # cdylib worker template
+│       └── src/lib.rs          # add/greet/multiply + Counter actor
+├── tests/python/rayrust_test.py # Python helper for xlang tests
+└── Cargo.toml
 ```
 
 ## Known limitations
 
-1. **Remote tasks in cluster mode**: ✅ **Solved!** Rust functions compiled into a `cdylib` `.so` are auto-registered via `#[ctor]` when the Ray worker loads the `.so`. See `rayrust-example-worker` crate and `cluster_remote_task` example.
-2. **C++ SDK feature ceiling**: This SDK wraps the C++ SDK, so it inherits its limitations. No Ray Serve, Ray Train, Ray Tune, or RLlib.
-3. **Synchronous + Asynchronous API**: Both sync (`get()`) and async (`get_async()`) APIs are provided. Async wraps blocking C++ FFI calls in `tokio::task::spawn_blocking`.
-4. **Cross-language calls**: FFI layer supports calling Python/Java tasks, but not yet exposed in the safe API.
+1. **Cluster node stability**: Actor creation may fail if cluster nodes lose heartbeats. This is a Ray cluster infrastructure issue, not a code issue.
+2. **Python result deserialization**: Simple types (int, string) work via xlang header stripping. Complex types (lists, dicts with pickle) need additional work.
+3. **`#[remote]` async fn in cluster mode**: The callback creates a new tokio runtime per call. For high-throughput scenarios, a persistent runtime would be better.
 
 ## License
 

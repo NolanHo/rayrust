@@ -498,31 +498,15 @@ ray_bytes_t ray_actor_call(const char *actor_id_data, size_t actor_id_len,
         auto runtime = ray::internal::GetRayRuntime();
         if (!runtime) return ray_bytes_t{nullptr, 0};
 
-        // For CPP actor tasks, the C++ SDK constructs the function descriptor as:
-        //   CppFunctionDescriptor(function_name=func_name, class_name=func_name)
-        // Then in TaskExecutor::ExecuteTask, for CPP (non-cross-lang) actor tasks:
-        //   func_name = class_name + "::" + function_name
-        // So if func_name is "Counter::increment", the C++ SDK will look for
-        // "Counter::increment::Counter::increment" — which is wrong.
-        //
-        // The correct approach: func_name should be just the method name (e.g. "increment"),
-        // and the C++ SDK will prepend the class_name from the actor handle.
-        // But our current RemoteFunctionHolder sets class_name=func_name, which
-        // causes the double-naming bug.
-        //
-        // Fix: for actor_call, split func_name into class_name and method_name
-        // at the "::" separator. If no "::", use empty class_name.
+        // C++ SDK's TaskExecutor::ExecuteTask for CPP (non-cross-lang) actor tasks:
+        //   func_name = typed_descriptor->FunctionName()
+        // (Only cross-lang tasks prepend class_name.)
+        // So the FunctionName must match the registered member function name.
+        // We register member functions as "class_name::method_name",
+        // so we pass the full "class_name::method_name" as function_name_.
         std::string fn(func_name);
-        std::string class_name;
-        std::string method_name = fn;
-        size_t pos = fn.find("::");
-        if (pos != std::string::npos) {
-            class_name = fn.substr(0, pos);
-            method_name = fn.substr(pos + 2);
-        }
-
-        ray::internal::RemoteFunctionHolder holder("", method_name,
-                                                   class_name,
+        ray::internal::RemoteFunctionHolder holder("", fn,
+                                                   fn,
                                                    ray::internal::LangType::CPP);
 
         auto task_args = build_task_args_cpp(args, arg_count);

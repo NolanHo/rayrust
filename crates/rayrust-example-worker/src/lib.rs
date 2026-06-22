@@ -32,6 +32,15 @@ pub fn multiply(a: i64, b: i64) -> i64 {
     a * b
 }
 
+/// Async task: simulates I/O with sleep, then returns sum.
+/// The #[remote] macro detects `async fn` and generates a callback
+/// that uses a tokio current-thread runtime to execute the future.
+#[remote]
+pub async fn async_sum(a: i64, b: i64) -> i64 {
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    a + b
+}
+
 // ─── Rust Actor: Counter ──────────────────────────────────────
 
 struct Counter {

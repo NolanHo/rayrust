@@ -31,6 +31,19 @@ pub use serialize::{deserialize, deserialize_xlang, serialize};
 /// Re-export the proc macro.
 pub use rayrust_macros::remote;
 
+/// Register a Rust actor member function with Ray's FunctionManager.
+/// This is used by the `#[rayrust::remote]` macro for actor methods.
+/// Must be called before `ray::init` or before the first actor call.
+pub fn register_member_function(
+    func_name: &str,
+    callback: extern "C" fn(u64, *const rayrust_sys::RayBytes, usize) -> rayrust_sys::RayBytes,
+) {
+    let name_c = rayrust_sys::to_cstring(func_name);
+    unsafe {
+        rayrust_sys::ray_register_member_function(name_c.as_ptr(), callback);
+    }
+}
+
 /// Create a placement group.
 /// `bundles_json` is a JSON array like `[{"CPU":1},{"CPU":1}]`.
 /// `strategy` is 0=PACK, 1=SPREAD, 2=STRICT_PACK, 3=STRICT_SPREAD.
@@ -66,8 +79,8 @@ pub fn task_call_python(module: &str, function: &str, args: &[&[u8]]) -> Result<
 }
 
 /// Create an actor by factory function name.
-pub fn actor_create(func_name: &str, args: &[&[u8]]) -> Result<ActorHandle, RayError> {
-    crate::runtime::actor_create_inner(func_name, args)
+pub fn actor_create(func_name: &str, args: &[&[u8]], is_ref: &[bool]) -> Result<ActorHandle, RayError> {
+    crate::runtime::actor_create_inner(func_name, args, is_ref)
 }
 
 /// Create a Python actor.

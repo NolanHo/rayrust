@@ -374,9 +374,19 @@ impl ActorHandle {
 }
 
 /// Create an actor by factory function name.
-pub(crate) fn actor_create_inner(func_name: &str, args: &[&[u8]]) -> Result<ActorHandle, RayError> {
+/// `is_ref` marks which args are ObjectRef IDs (pass by reference).
+pub(crate) fn actor_create_inner(
+    func_name: &str,
+    args: &[&[u8]],
+    is_ref: &[bool],
+) -> Result<ActorHandle, RayError> {
     let func_c = to_cstring(func_name);
     let args_arr = build_args_array(args);
+    let is_ref_ptr = if is_ref.is_empty() {
+        std::ptr::null()
+    } else {
+        is_ref.as_ptr()
+    };
 
     let bytes = unsafe {
         rayrust_sys::ray_actor_create(

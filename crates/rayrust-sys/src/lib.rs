@@ -97,6 +97,14 @@ extern "C" {
         func_name: *const c_char,
         callback: extern "C" fn(args: *const RayBytes, arg_count: usize) -> RayBytes,
     );
+    pub fn ray_register_member_function(
+        func_name: *const c_char,
+        callback: extern "C" fn(
+            actor_ptr: u64,
+            args: *const RayBytes,
+            arg_count: usize,
+        ) -> RayBytes,
+    );
 
     // Misc
     pub fn ray_was_current_actor_restarted() -> bool;

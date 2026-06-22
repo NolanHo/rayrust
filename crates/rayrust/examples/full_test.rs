@@ -95,7 +95,49 @@ async fn main() {
         Err(e) => println!("Python actor_create failed: {}", e),
     }
 
-    // ── 6. Placement Group ──────────────────────────────────
+    // ── 6. Rust Actor (Rust → Rust) ─────────────────────────
+    println!("\n--- 6. Rust Actor ---");
+    // Create a Rust Counter actor via factory function
+    let arg_start = rayrust::serialize(&100i64).unwrap();
+    let args_actor: Vec<&[u8]> = vec![&arg_start];
+
+    match rayrust::actor_create("__rayrust_actor_factory_counter", &args_actor, &[]) {
+        Ok(actor) => {
+            println!("Rust Counter actor created ✓ (id_len={})", actor.id().len());
+
+            // Call Counter::increment(5)
+            let arg_n = rayrust::serialize(&5i64).unwrap();
+            let args_inc: Vec<&[u8]> = vec![&arg_n];
+            match rayrust::actor_call(actor.id(), "__rayrust_actor_factory_counter::increment", &args_inc) {
+                Ok(obj_ref) => {
+                    let obj_ref: ObjectRef<i64> = obj_ref.cast();
+                    match obj_ref.get_async().await {
+                        Ok(val) => println!("Counter.increment(5) = {} ✓", val),
+                        Err(e) => println!("Counter.increment result failed: {}", e),
+                    }
+                }
+                Err(e) => println!("Counter.increment failed: {}", e),
+            }
+
+            // Call Counter::get()
+            match rayrust::actor_call(actor.id(), "__rayrust_actor_factory_counter::get", &[]) {
+                Ok(obj_ref) => {
+                    let obj_ref: ObjectRef<i64> = obj_ref.cast();
+                    match obj_ref.get_async().await {
+                        Ok(val) => println!("Counter.get() = {} ✓", val),
+                        Err(e) => println!("Counter.get result failed: {}", e),
+                    }
+                }
+                Err(e) => println!("Counter.get failed: {}", e),
+            }
+
+            actor.kill(true);
+            println!("Counter killed ✓");
+        }
+        Err(e) => println!("Rust actor_create failed: {}", e),
+    }
+
+    // ── 7. Placement Group ──────────────────────────────────
     println!("\n--- 6. Placement Group ---");
     let bundles_json = r#"[{"CPU": 1}, {"CPU": 1}]"#;
     match rayrust::placement_group_create("test_pg", bundles_json, 0) {
@@ -107,8 +149,8 @@ async fn main() {
         Err(e) => println!("PlacementGroup create failed: {}", e),
     }
 
-    // ── 7. id_hex ───────────────────────────────────────────
-    println!("\n--- 7. Debug helpers ---");
+    // ── 8. id_hex ───────────────────────────────────────────
+    println!("\n--- 8. Debug helpers ---");
     let obj = rayrust::put(&42i32);
     println!("ObjectRef id_hex: {} ✓", obj.id_hex());
     println!("is_initialized: {} ✓", rayrust::is_initialized());

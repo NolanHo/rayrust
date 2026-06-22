@@ -13,6 +13,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -187,6 +188,21 @@ typedef ray_bytes_t (*ray_func_callback_t)(const ray_bytes_t *args, size_t arg_c
 /// `func_name` is the name used with ray_task_call.
 /// `callback` is the C callback that will be invoked when the task executes.
 void ray_register_function(const char *func_name, ray_func_callback_t callback);
+
+// ─── Actor Member Function Registration ───────────────────────
+
+/// Callback type for a Rust actor member function.
+/// `actor_ptr` is the raw pointer (uint64_t) stored by the factory.
+/// `args` / `arg_count` are the msgpack-serialized arguments (without `self`).
+/// Returns a heap-allocated ray_bytes_t containing the msgpack-serialized result.
+typedef ray_bytes_t (*ray_member_callback_t)(uint64_t actor_ptr,
+                                                const ray_bytes_t *args,
+                                                size_t arg_count);
+
+/// Register a Rust actor member function.
+/// `func_name` is the name used with ray_actor_call.
+/// `callback` is the C callback invoked when the actor method executes.
+void ray_register_member_function(const char *func_name, ray_member_callback_t callback);
 
 // ─── Async Get (CoreWorker::GetAsync + eventfd) ──────────────
 

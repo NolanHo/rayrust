@@ -111,6 +111,64 @@ void ray_register_function(const char *func_name, ray_func_callback_t callback) 
     });
 }
 
+// ─── Actor Member Function Registration ───────────────────────
+
+// Global map of Rust member function callbacks.
+static std::unordered_map<std::string, ray_member_callback_t> &get_rust_member_functions() {
+    static std::unordered_map<std::string, ray_member_callback_t> map;
+    return map;
+}
+
+// Invoke a Rust member function: deserialize actor pointer, forward to callback.
+static msgpack::sbuffer invoke_rust_member_function(
+    const std::string &func_name,
+    msgpack::sbuffer *actor_ptr_buf,
+    const ray::internal::ArgsBufferList &args_buffer) {
+    auto &fns = get_rust_member_functions();
+    auto it = fns.find(func_name);
+    if (it == fns.end()) {
+        throw std::runtime_error("Rust member function not found: " + func_name);
+    }
+
+    // Deserialize the actor pointer (uint64_t) from actor_ptr_buf
+    uint64_t actor_ptr = ray::internal::Serializer::Deserialize<uint64_t>(
+        actor_ptr_buf->data(), actor_ptr_buf->size());
+
+    // Build ray_bytes_t array from ArgsBufferList
+    std::vector<ray_bytes_t> args_arr;
+    args_arr.reserve(args_buffer.size());
+    for (const auto &buf : args_buffer) {
+        args_arr.push_back(ray_bytes_t{buf.data(), buf.size()});
+    }
+
+    // Call the Rust callback
+    ray_bytes_t result = it->second(actor_ptr, args_arr.data(), args_arr.size());
+
+    // Copy result into msgpack::sbuffer and free the C-allocated data
+    msgpack::sbuffer sbuf(result.len);
+    sbuf.write(result.data, result.len);
+    std::free(const_cast<char *>(result.data));
+
+    return sbuf;
+}
+
+void ray_register_member_function(const char *func_name, ray_member_callback_t callback) {
+    std::string name(func_name);
+    auto &fns = get_rust_member_functions();
+    fns[name] = callback;
+
+    // Register with FunctionManager's map_mem_func_invokers_ via const_cast.
+    auto &fm = ray::internal::GetFunctionManager();
+    auto [_, mem_map_ref] = fm.GetRemoteFunctions();
+    auto &mem_map = const_cast<ray::internal::RemoteMemberFunctionMap_t &>(mem_map_ref);
+
+    mem_map.emplace(name,
+        [name](msgpack::sbuffer *actor_ptr,
+               const ray::internal::ArgsBufferList &args) -> msgpack::sbuffer {
+            return invoke_rust_member_function(name, actor_ptr, args);
+        });
+}
+
 // ─── Helpers ──────────────────────────────────────────────────
 
 /// Copy a std::string (may contain null bytes) into a heap-allocated ray_bytes_t.
@@ -384,6 +442,14 @@ ray_bytes_t ray_actor_create(const char *func_name,
         auto runtime = ray::internal::GetRayRuntime();
         if (!runtime) return ray_bytes_t{nullptr, 0};
 
+        // For CPP actors, RemoteFunctionHolder is:
+        //   RemoteFunctionHolder(module_name="", function_name=func_name,
+        //                         class_name=func_name, LangType::CPP)
+        // The C++ SDK uses class_name to construct member function names:
+        //   class_name + "::" + method_name
+        // So if func_name="__rayrust_actor_factory_counter",
+        // member functions must be registered as
+        //   "__rayrust_actor_factory_counter::increment" etc.
         ray::internal::RemoteFunctionHolder holder("", std::string(func_name),
                                                    std::string(func_name),
                                                    ray::internal::LangType::CPP);
@@ -432,8 +498,31 @@ ray_bytes_t ray_actor_call(const char *actor_id_data, size_t actor_id_len,
         auto runtime = ray::internal::GetRayRuntime();
         if (!runtime) return ray_bytes_t{nullptr, 0};
 
-        ray::internal::RemoteFunctionHolder holder("", std::string(func_name),
-                                                   std::string(func_name),
+        // For CPP actor tasks, the C++ SDK constructs the function descriptor as:
+        //   CppFunctionDescriptor(function_name=func_name, class_name=func_name)
+        // Then in TaskExecutor::ExecuteTask, for CPP (non-cross-lang) actor tasks:
+        //   func_name = class_name + "::" + function_name
+        // So if func_name is "Counter::increment", the C++ SDK will look for
+        // "Counter::increment::Counter::increment" — which is wrong.
+        //
+        // The correct approach: func_name should be just the method name (e.g. "increment"),
+        // and the C++ SDK will prepend the class_name from the actor handle.
+        // But our current RemoteFunctionHolder sets class_name=func_name, which
+        // causes the double-naming bug.
+        //
+        // Fix: for actor_call, split func_name into class_name and method_name
+        // at the "::" separator. If no "::", use empty class_name.
+        std::string fn(func_name);
+        std::string class_name;
+        std::string method_name = fn;
+        size_t pos = fn.find("::");
+        if (pos != std::string::npos) {
+            class_name = fn.substr(0, pos);
+            method_name = fn.substr(pos + 2);
+        }
+
+        ray::internal::RemoteFunctionHolder holder("", method_name,
+                                                   class_name,
                                                    ray::internal::LangType::CPP);
 
         auto task_args = build_task_args_cpp(args, arg_count);

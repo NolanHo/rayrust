@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rayrust-sys",
+    "crates/rayrust-macros",
+    "crates/rayrust",
+]

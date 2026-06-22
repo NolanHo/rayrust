@@ -1,0 +1,8 @@
+[package]
+name = "rayrust-sys"
+version = "0.1.0"
+edition = "2021"
+links = "ray_c"
+
+[build-dependencies]
+cc = "1.0"

@@ -231,6 +231,34 @@ pub(crate) fn get_raw_timeout(id: &[u8], timeout_ms: i32) -> Result<Vec<u8>, Ray
     Ok(guard.as_slice().to_vec())
 }
 
+/// Check if a single object is locally available (non-blocking poll).
+/// Uses Ray's `Wait` with a timeout. Returns `true` if the object is ready.
+pub(crate) fn wait_raw(id: &[u8], timeout_ms: i32) -> Result<bool, RayError> {
+    let ray_bytes = RayBytes {
+        data: id.as_ptr() as *const std::os::raw::c_char,
+        len: id.len(),
+    };
+    let ids = [ray_bytes];
+
+    let result = unsafe {
+        rayrust_sys::ray_wait(
+            ids.as_ptr(),
+            1,
+            1 as c_int,
+            timeout_ms,
+        )
+    };
+
+    if result.is_null() {
+        return Err(RayError::Ffi("ray_wait returned null".into()));
+    }
+
+    let is_ready = unsafe { *result };
+    unsafe { rayrust_sys::ray_free_bools(result) };
+
+    Ok(is_ready)
+}
+
 // ─── Task ─────────────────────────────────────────────────────
 
 /// Call a remote task by function name.

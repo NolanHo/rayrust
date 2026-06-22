@@ -46,6 +46,12 @@ extern "C" {
         args: *const RayBytes,
         arg_count: usize,
     ) -> RayBytes;
+    pub fn ray_task_call_python(
+        module_name: *const c_char,
+        function_name: *const c_char,
+        args: *const RayBytes,
+        arg_count: usize,
+    ) -> RayBytes;
 
     // Actor
     pub fn ray_actor_create(
@@ -53,10 +59,23 @@ extern "C" {
         args: *const RayBytes,
         arg_count: usize,
     ) -> RayBytes;
+    pub fn ray_actor_create_python(
+        module_name: *const c_char,
+        class_name: *const c_char,
+        args: *const RayBytes,
+        arg_count: usize,
+    ) -> RayBytes;
     pub fn ray_actor_call(
         actor_id_data: *const c_char,
         actor_id_len: usize,
         func_name: *const c_char,
+        args: *const RayBytes,
+        arg_count: usize,
+    ) -> RayBytes;
+    pub fn ray_actor_call_python(
+        actor_id_data: *const c_char,
+        actor_id_len: usize,
+        method_name: *const c_char,
         args: *const RayBytes,
         arg_count: usize,
     ) -> RayBytes;

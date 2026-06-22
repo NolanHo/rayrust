@@ -229,6 +229,54 @@ bool *ray_wait(const ray_bytes_t *ids, size_t count, int num_objects, int timeou
 
 // ─── Task ─────────────────────────────────────────────────────
 
+/// Helper: build TaskArg vector for CPP tasks (raw msgpack, no wrapping).
+static std::vector<ray::internal::TaskArg>
+build_task_args_cpp(const ray_bytes_t *args, size_t arg_count) {
+    std::vector<ray::internal::TaskArg> task_args;
+    task_args.reserve(arg_count);
+    for (size_t i = 0; i < arg_count; i++) {
+        ray::internal::TaskArg arg;
+        arg.buf = msgpack::sbuffer(args[i].len);
+        arg.buf->write(args[i].data, args[i].len);
+        task_args.push_back(std::move(arg));
+    }
+    return task_args;
+}
+
+/// Helper: build TaskArg vector for Python tasks (xlang wrapped).
+static std::vector<ray::internal::TaskArg>
+build_task_args_python(const ray_bytes_t *args, size_t arg_count) {
+    std::vector<ray::internal::TaskArg> task_args;
+    task_args.reserve(arg_count * 2);
+    for (size_t i = 0; i < arg_count; i++) {
+        // 1. Dummy kwargs (for Python)
+        ray::internal::TaskArg dummy;
+        dummy.buf = msgpack::sbuffer(ray::internal::METADATA_STR_DUMMY.size());
+        dummy.buf->write(ray::internal::METADATA_STR_DUMMY.data(),
+                         ray::internal::METADATA_STR_DUMMY.size());
+        dummy.meta_str = ray::internal::METADATA_STR_RAW;
+        task_args.push_back(std::move(dummy));
+
+        // 2. Data with xlang header
+        //    Format: [data_len (msgpack int)] [padding to XLANG_HEADER_LEN] [data]
+        //    Use Serialize(const char*, size_t) which does pack_bin — NOT
+        //    Serialize(string) which does pack(str) and breaks Python deserialization.
+        auto data_buf = ray::internal::Serializer::Serialize(args[i].data, args[i].len);
+        auto len_buf = ray::internal::Serializer::Serialize(data_buf.size());
+
+        ray::internal::TaskArg xlang_arg;
+        xlang_arg.buf = msgpack::sbuffer(ray::internal::XLANG_HEADER_LEN + data_buf.size());
+        xlang_arg.buf->write(len_buf.data(), len_buf.size());
+        for (size_t j = len_buf.size(); j < ray::internal::XLANG_HEADER_LEN; ++j) {
+            xlang_arg.buf->write("", 1);
+        }
+        xlang_arg.buf->write(data_buf.data(), data_buf.size());
+        xlang_arg.meta_str = ray::internal::METADATA_STR_XLANG;
+        task_args.push_back(std::move(xlang_arg));
+    }
+    return task_args;
+}
+
 ray_bytes_t ray_task_call(const char *func_name,
                            const ray_bytes_t *args,
                            size_t arg_count) {
@@ -239,20 +287,39 @@ ray_bytes_t ray_task_call(const char *func_name,
         std::string fn(func_name);
         ray::internal::RemoteFunctionHolder holder{std::move(fn)};
 
-        std::vector<ray::internal::TaskArg> task_args;
-        task_args.reserve(arg_count);
-        for (size_t i = 0; i < arg_count; i++) {
-            ray::internal::TaskArg arg;
-            arg.buf = msgpack::sbuffer(args[i].len);
-            arg.buf->write(args[i].data, args[i].len);
-            task_args.push_back(std::move(arg));
-        }
+        auto task_args = build_task_args_cpp(args, arg_count);
 
         ray::internal::CallOptions options;
         std::string id = runtime->Call(holder, task_args, options);
         return dup_bytes(id);
     } catch (const std::exception &e) {
         fprintf(stderr, "ray_task_call error: %s\n", e.what());
+        return ray_bytes_t{nullptr, 0};
+    }
+}
+
+/// Call a Python remote function.
+/// `module_name` and `function_name` are null-terminated C strings.
+/// `args` are msgpack-serialized arguments (will be wrapped with xlang header).
+ray_bytes_t ray_task_call_python(const char *module_name,
+                                  const char *function_name,
+                                  const ray_bytes_t *args,
+                                  size_t arg_count) {
+    try {
+        auto runtime = ray::internal::GetRayRuntime();
+        if (!runtime) return ray_bytes_t{nullptr, 0};
+
+        ray::internal::RemoteFunctionHolder holder(
+            std::string(module_name), std::string(function_name),
+            "", ray::internal::LangType::PYTHON);
+
+        auto task_args = build_task_args_python(args, arg_count);
+
+        ray::internal::CallOptions options;
+        std::string id = runtime->Call(holder, task_args, options);
+        return dup_bytes(id);
+    } catch (const std::exception &e) {
+        fprintf(stderr, "ray_task_call_python error: %s\n", e.what());
         return ray_bytes_t{nullptr, 0};
     }
 }
@@ -270,20 +337,38 @@ ray_bytes_t ray_actor_create(const char *func_name,
                                                    std::string(func_name),
                                                    ray::internal::LangType::CPP);
 
-        std::vector<ray::internal::TaskArg> task_args;
-        task_args.reserve(arg_count);
-        for (size_t i = 0; i < arg_count; i++) {
-            ray::internal::TaskArg arg;
-            arg.buf = msgpack::sbuffer(args[i].len);
-            arg.buf->write(args[i].data, args[i].len);
-            task_args.push_back(std::move(arg));
-        }
+        auto task_args = build_task_args_cpp(args, arg_count);
 
         ray::internal::ActorCreationOptions options;
         std::string id = runtime->CreateActor(holder, task_args, options);
         return dup_bytes(id);
     } catch (const std::exception &e) {
         fprintf(stderr, "ray_actor_create error: %s\n", e.what());
+        return ray_bytes_t{nullptr, 0};
+    }
+}
+
+/// Create a Python actor.
+/// `module_name` is the Python module, `class_name` is the Python class.
+ray_bytes_t ray_actor_create_python(const char *module_name,
+                                      const char *class_name,
+                                      const ray_bytes_t *args,
+                                      size_t arg_count) {
+    try {
+        auto runtime = ray::internal::GetRayRuntime();
+        if (!runtime) return ray_bytes_t{nullptr, 0};
+
+        ray::internal::RemoteFunctionHolder holder(
+            std::string(module_name), "__init__",
+            std::string(class_name), ray::internal::LangType::PYTHON);
+
+        auto task_args = build_task_args_python(args, arg_count);
+
+        ray::internal::ActorCreationOptions options;
+        std::string id = runtime->CreateActor(holder, task_args, options);
+        return dup_bytes(id);
+    } catch (const std::exception &e) {
+        fprintf(stderr, "ray_actor_create_python error: %s\n", e.what());
         return ray_bytes_t{nullptr, 0};
     }
 }
@@ -300,14 +385,7 @@ ray_bytes_t ray_actor_call(const char *actor_id_data, size_t actor_id_len,
                                                    std::string(func_name),
                                                    ray::internal::LangType::CPP);
 
-        std::vector<ray::internal::TaskArg> task_args;
-        task_args.reserve(arg_count);
-        for (size_t i = 0; i < arg_count; i++) {
-            ray::internal::TaskArg arg;
-            arg.buf = msgpack::sbuffer(args[i].len);
-            arg.buf->write(args[i].data, args[i].len);
-            task_args.push_back(std::move(arg));
-        }
+        auto task_args = build_task_args_cpp(args, arg_count);
 
         std::string actor_id(actor_id_data, actor_id_len);
         ray::internal::CallOptions options;
@@ -315,6 +393,32 @@ ray_bytes_t ray_actor_call(const char *actor_id_data, size_t actor_id_len,
         return dup_bytes(id);
     } catch (const std::exception &e) {
         fprintf(stderr, "ray_actor_call error: %s\n", e.what());
+        return ray_bytes_t{nullptr, 0};
+    }
+}
+
+/// Call a method on a Python actor.
+/// `method_name` is the Python method name (without `self`).
+ray_bytes_t ray_actor_call_python(const char *actor_id_data, size_t actor_id_len,
+                                    const char *method_name,
+                                    const ray_bytes_t *args,
+                                    size_t arg_count) {
+    try {
+        auto runtime = ray::internal::GetRayRuntime();
+        if (!runtime) return ray_bytes_t{nullptr, 0};
+
+        ray::internal::RemoteFunctionHolder holder(
+            "", std::string(method_name), "",
+            ray::internal::LangType::PYTHON);
+
+        auto task_args = build_task_args_python(args, arg_count);
+
+        std::string actor_id(actor_id_data, actor_id_len);
+        ray::internal::CallOptions options;
+        std::string id = runtime->CallActor(holder, actor_id, task_args, options);
+        return dup_bytes(id);
+    } catch (const std::exception &e) {
+        fprintf(stderr, "ray_actor_call_python error: %s\n", e.what());
         return ray_bytes_t{nullptr, 0};
     }
 }

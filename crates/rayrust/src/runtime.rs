@@ -282,7 +282,6 @@ pub(crate) fn task_call_inner(func_name: &str, args: &[&[u8]]) -> Result<ObjectR
 }
 
 /// Asynchronously call a remote task by function name.
-/// Serializes args and submits the task on a blocking thread.
 pub(crate) async fn task_call_inner_async(
     func_name: String,
     args: Vec<Vec<u8>>,
@@ -295,12 +294,37 @@ pub(crate) async fn task_call_inner_async(
     .map_err(|e| RayError::Runtime(format!("task_call join error: {}", e)))?
 }
 
+/// Call a Python remote function.
+pub(crate) fn task_call_python_inner(
+    module: &str,
+    function: &str,
+    args: &[&[u8]],
+) -> Result<ObjectRef<()>, RayError> {
+    let module_c = to_cstring(module);
+    let func_c = to_cstring(function);
+    let args_arr = build_args_array(args);
+
+    let bytes = unsafe {
+        rayrust_sys::ray_task_call_python(
+            module_c.as_ptr(),
+            func_c.as_ptr(),
+            args_arr.as_ptr(),
+            args_arr.len(),
+        )
+    };
+
+    let guard = CBytesGuard::from(bytes)
+        .ok_or_else(|| RayError::Ffi(format!("ray_task_call_python '{}.{}' returned null", module, function)))?;
+    Ok(ObjectRef::from_id(guard.as_slice().to_vec()))
+}
+
 // ─── Actor ────────────────────────────────────────────────────
 
 /// A handle to a remote actor.
 #[derive(Debug, Clone)]
 pub struct ActorHandle {
     pub(crate) id: Vec<u8>,
+    pub(crate) is_python: bool,
 }
 
 impl ActorHandle {
@@ -330,7 +354,27 @@ pub(crate) fn actor_create_inner(func_name: &str, args: &[&[u8]]) -> Result<Acto
 
     let guard = CBytesGuard::from(bytes)
         .ok_or_else(|| RayError::Ffi(format!("ray_actor_create '{}' returned null", func_name)))?;
-    Ok(ActorHandle { id: guard.as_slice().to_vec() })
+    Ok(ActorHandle { id: guard.as_slice().to_vec(), is_python: false })
+}
+
+/// Create a Python actor.
+pub(crate) fn actor_create_python_inner(module: &str, class: &str, args: &[&[u8]]) -> Result<ActorHandle, RayError> {
+    let module_c = to_cstring(module);
+    let class_c = to_cstring(class);
+    let args_arr = build_args_array(args);
+
+    let bytes = unsafe {
+        rayrust_sys::ray_actor_create_python(
+            module_c.as_ptr(),
+            class_c.as_ptr(),
+            args_arr.as_ptr(),
+            args_arr.len(),
+        )
+    };
+
+    let guard = CBytesGuard::from(bytes)
+        .ok_or_else(|| RayError::Ffi(format!("ray_actor_create_python '{}.{}' returned null", module, class)))?;
+    Ok(ActorHandle { id: guard.as_slice().to_vec(), is_python: true })
 }
 
 /// Call a method on an actor by binary actor ID and function name.
@@ -354,6 +398,30 @@ pub(crate) fn actor_call_inner(
 
     let guard = CBytesGuard::from(bytes)
         .ok_or_else(|| RayError::Ffi(format!("ray_actor_call '{}.{}' returned null", actor_id.len(), func_name)))?;
+    Ok(ObjectRef::from_id(guard.as_slice().to_vec()))
+}
+
+/// Call a method on a Python actor.
+pub(crate) fn actor_call_python_inner(
+    actor_id: &[u8],
+    method_name: &str,
+    args: &[&[u8]],
+) -> Result<ObjectRef<()>, RayError> {
+    let method_c = to_cstring(method_name);
+    let args_arr = build_args_array(args);
+
+    let bytes = unsafe {
+        rayrust_sys::ray_actor_call_python(
+            actor_id.as_ptr() as *const std::os::raw::c_char,
+            actor_id.len(),
+            method_c.as_ptr(),
+            args_arr.as_ptr(),
+            args_arr.len(),
+        )
+    };
+
+    let guard = CBytesGuard::from(bytes)
+        .ok_or_else(|| RayError::Ffi(format!("ray_actor_call_python '{}' returned null", method_name)))?;
     Ok(ObjectRef::from_id(guard.as_slice().to_vec()))
 }
 

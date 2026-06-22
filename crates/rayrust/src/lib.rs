@@ -4,25 +4,9 @@
 //! idiomatic Rust APIs for Ray's core distributed primitives:
 //! - Object store (put/get/wait) — sync and async
 //! - Remote tasks — sync and async
+//! - Cross-language calls (Python tasks + actors)
 //! - Actors
 //! - Placement groups
-//!
-//! # Quick Start (async)
-//! ```no_run
-//! use rayrust::prelude::*;
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), RayError> {
-//!     rayrust::init("192.168.42.141:6379")?;
-//!
-//!     let obj = rayrust::put(&42i32);
-//!     let val: i32 = obj.get_async().await?;
-//!     assert_eq!(val, 42);
-//!
-//!     rayrust::shutdown();
-//!     Ok(())
-//! }
-//! ```
 
 pub mod error;
 pub mod object_ref;
@@ -58,14 +42,32 @@ pub async fn task_call_async(func_name: &str, args: Vec<Vec<u8>>) -> Result<Obje
     crate::runtime::task_call_inner_async(func_name.to_string(), args).await
 }
 
+/// Call a Python remote function.
+/// `module` is the Python module name, `function` is the function name.
+pub fn task_call_python(module: &str, function: &str, args: &[&[u8]]) -> Result<ObjectRef<()>, RayError> {
+    crate::runtime::task_call_python_inner(module, function, args)
+}
+
 /// Create an actor by factory function name.
 pub fn actor_create(func_name: &str, args: &[&[u8]]) -> Result<ActorHandle, RayError> {
     crate::runtime::actor_create_inner(func_name, args)
 }
 
+/// Create a Python actor.
+/// `module` is the Python module, `class` is the Python class name.
+pub fn actor_create_python(module: &str, class: &str, args: &[&[u8]]) -> Result<ActorHandle, RayError> {
+    crate::runtime::actor_create_python_inner(module, class, args)
+}
+
 /// Call a method on an actor.
 pub fn actor_call(actor_id: &[u8], func_name: &str, args: &[&[u8]]) -> Result<ObjectRef<()>, RayError> {
     crate::runtime::actor_call_inner(actor_id, func_name, args)
+}
+
+/// Call a method on a Python actor.
+/// `method_name` is the Python method name (without `self`).
+pub fn actor_call_python(actor_id: &[u8], method_name: &str, args: &[&[u8]]) -> Result<ObjectRef<()>, RayError> {
+    crate::runtime::actor_call_python_inner(actor_id, method_name, args)
 }
 
 /// Kill an actor.
@@ -85,6 +87,7 @@ pub mod prelude {
     pub use crate::{
         actor_call, actor_create, actor_kill, get_namespace,
         task_call, task_call_async, was_current_actor_restarted,
+        task_call_python, actor_create_python, actor_call_python,
     };
     pub use rayrust_macros::remote;
 }

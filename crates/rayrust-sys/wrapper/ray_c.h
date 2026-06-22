@@ -78,6 +78,14 @@ ray_bytes_t ray_task_call(const char *func_name,
                            const ray_bytes_t *args,
                            size_t arg_count);
 
+/// Call a Python remote function.
+/// `module_name` and `function_name` are null-terminated C strings.
+/// `args` are msgpack-serialized arguments (will be wrapped with xlang header).
+ray_bytes_t ray_task_call_python(const char *module_name,
+                                  const char *function_name,
+                                  const ray_bytes_t *args,
+                                  size_t arg_count);
+
 // ─── Actor ────────────────────────────────────────────────────
 
 /// Create an actor by calling a factory function.
@@ -86,6 +94,13 @@ ray_bytes_t ray_actor_create(const char *func_name,
                               const ray_bytes_t *args,
                               size_t arg_count);
 
+/// Create a Python actor.
+/// `module_name` is the Python module, `class_name` is the Python class.
+ray_bytes_t ray_actor_create_python(const char *module_name,
+                                      const char *class_name,
+                                      const ray_bytes_t *args,
+                                      size_t arg_count);
+
 /// Call a method on an actor.
 /// `actor_id_data`/`actor_id_len` is the binary actor ID.
 /// Returns a ray_bytes_t containing the binary object ID of the result.
@@ -93,6 +108,13 @@ ray_bytes_t ray_actor_call(const char *actor_id_data, size_t actor_id_len,
                             const char *func_name,
                             const ray_bytes_t *args,
                             size_t arg_count);
+
+/// Call a method on a Python actor.
+/// `method_name` is the Python method name (without `self`).
+ray_bytes_t ray_actor_call_python(const char *actor_id_data, size_t actor_id_len,
+                                    const char *method_name,
+                                    const ray_bytes_t *args,
+                                    size_t arg_count);
 
 /// Kill an actor.
 /// `actor_id_data`/`actor_id_len` is the binary actor ID.

@@ -233,6 +233,7 @@ pub(crate) fn get_raw_timeout(id: &[u8], timeout_ms: i32) -> Result<Vec<u8>, Ray
 
 /// Check if a single object is locally available (non-blocking poll).
 /// Uses Ray's `Wait` with a timeout. Returns `true` if the object is ready.
+#[allow(dead_code)]
 pub(crate) fn wait_raw(id: &[u8], timeout_ms: i32) -> Result<bool, RayError> {
     let ray_bytes = RayBytes {
         data: id.as_ptr() as *const std::os::raw::c_char,

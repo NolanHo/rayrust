@@ -80,6 +80,14 @@ extern "C" {
     pub fn ray_was_current_actor_restarted() -> bool;
     pub fn ray_get_namespace() -> RayBytes;
 
+    // Async Get (CoreWorker::GetAsync + eventfd)
+    // RayAsyncGet is an opaque C struct — we use c_void as the pointee.
+    pub fn ray_async_get_start(id_data: *const c_char, id_len: usize) -> *mut std::ffi::c_void;
+    pub fn ray_async_get_fd(handle: *const std::ffi::c_void) -> c_int;
+    pub fn ray_async_get_is_ready(handle: *const std::ffi::c_void) -> c_int;
+    pub fn ray_async_get_result(handle: *const std::ffi::c_void) -> RayBytes;
+    pub fn ray_async_get_destroy(handle: *mut std::ffi::c_void);
+
     // Memory Management
     pub fn ray_free_bytes(ptr: *mut RayBytes);
     pub fn ray_free_bools(ptr: *mut bool);

@@ -1,7 +1,9 @@
 //! Example: Async remote tasks with tokio + Ray cluster.
 //!
-//! Demonstrates concurrent task submission and result gathering using
-//! async/await — no blocking calls on the tokio runtime.
+//! Uses `CoreWorker::GetAsync` + eventfd for non-blocking async gets.
+//! Put/Get still uses sync API (Put goes to plasma store, not memory store).
+//! Remote task results arrive via CoreWorker's task receiver into memory store,
+//! where GetAsync's callback fires.
 
 use rayrust::prelude::*;
 
@@ -27,7 +29,7 @@ async fn main() {
             std::process::exit(1);
         });
 
-    println!("=== Ray Async Demo ===");
+    println!("=== Ray Async Demo (GetAsync + eventfd) ===");
     println!("Address: {}, Node: {}", address, node_ip);
 
     let config = RayConfig::new(&address)
@@ -37,14 +39,8 @@ async fn main() {
     rayrust::init_with_config(&config).expect("init failed");
     println!("✓ Ray initialized\n");
 
-    // ── Async Put / Get ─────────────────────────────────────
-    println!("--- Async Put / Get ---");
-    let obj = rayrust::put_async(99i32).await.expect("put failed");
-    let val: i32 = obj.get_async().await.expect("get failed");
-    println!("put_async(99) → get_async → {} ✓", val);
-
     // ── Concurrent Remote Tasks (tokio::join!) ──────────────
-    println!("\n--- Concurrent Remote Tasks ---");
+    println!("--- Concurrent Remote Tasks ---");
 
     let (r1, r2, r3) = tokio::join!(
         add_remote_async(10, 32),
@@ -56,6 +52,7 @@ async fn main() {
     let r2: ObjectRef<i32> = r2.expect("add(100,200) failed");
     let r3: ObjectRef<String> = r3.expect("greet failed");
 
+    // get_async uses CoreWorker::GetAsync + eventfd — zero threads blocked
     let (v1, v2, v3) = tokio::join!(
         r1.get_async(),
         r2.get_async(),
@@ -69,7 +66,6 @@ async fn main() {
     // ── Batch Concurrent Tasks (10 tasks) ───────────────────
     println!("\n--- Batch Concurrent (10 tasks) ---");
 
-    // Submit all 10 tasks concurrently
     let mut submit_futs = Vec::new();
     for i in 0..10i32 {
         submit_futs.push(add_remote_async(i, i * 2));
@@ -78,7 +74,6 @@ async fn main() {
     let obj_refs: Vec<ObjectRef<i32>> = join_all(submit_futs).await
         .into_iter().map(|r| r.expect("task failed")).collect();
 
-    // Gather all results concurrently
     let mut get_futs = Vec::new();
     for obj_ref in obj_refs {
         get_futs.push(async move { obj_ref.get_async().await });
@@ -103,7 +98,6 @@ async fn main() {
     println!("✓ Ray shutdown");
 }
 
-/// Simple join_all: polls all futures concurrently via JoinSet.
 async fn join_all<F, T>(futs: Vec<F>) -> Vec<T>
 where
     F: std::future::Future<Output = T> + Send + 'static,

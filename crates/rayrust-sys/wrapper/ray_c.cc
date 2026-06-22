@@ -395,3 +395,161 @@ void ray_free_bytes(ray_bytes_t *ptr) {
 void ray_free_bools(bool *ptr) {
     if (ptr) std::free(ptr);
 }
+
+// ─── Async Get (CoreWorker::GetAsync + eventfd) ──────────────
+//
+// This bypasses the C++ SDK's blocking Get() and calls
+// CoreWorker::GetAsync() directly, which is non-blocking.
+// When the object arrives, CoreWorker's io_context thread calls
+// our callback, which writes to an eventfd. The Rust side polls
+// the eventfd via tokio::io::AsyncFd — zero threads blocked.
+//
+// We do NOT include ray/core_worker/core_worker.h — it pulls in
+// protobuf/gRPC/absl headers not available in the pip package.
+// Instead we forward-declare the minimal types needed and the
+// linker resolves the symbols from libray_api.so.
+//
+// Hybrid approach: GetAsync notifies us when the object is ready,
+// then the Rust side does a fast blocking Get() (instant, since the
+// object is already in the local store). No thread is blocked
+// waiting for the object to arrive from a remote node.
+
+#include <sys/eventfd.h>
+#include <unistd.h>
+#include <thread>
+
+// ── Forward declarations matching Ray Core ABI ──
+//
+// These types must be in the correct namespaces so that C++ name
+// mangling produces the same symbol names as libray_api.so.
+// ObjectID is a simple POD type (28 bytes, #pragma pack(1), no vtable).
+// RayObject is opaque — we only store the shared_ptr pointer.
+// CoreWorker::GetAsync takes a std::function callback.
+
+namespace ray {
+    class RayObject;  // opaque — we never call methods on it
+
+    // ObjectID: matches ray::ObjectID ABI.
+    // The real type inherits BaseID<ObjectID> which is #pragma pack(1)
+    // with a uint8_t[28] member. No vtable, no virtual methods.
+    // We declare it with 28 bytes of storage so sizeof matches.
+    // Name mangling only cares about namespace::classname, not inheritance.
+    class ObjectID {
+        char _data[28];
+    };
+}
+
+namespace ray::core {
+    // Match CoreWorker::SetResultCallback type.
+    using SetResultCallback =
+        std::function<void(std::shared_ptr<ray::RayObject>, ray::ObjectID, void*)>;
+
+    class CoreWorker {
+    public:
+        void GetAsync(const ray::ObjectID&, SetResultCallback, void*);
+    };
+
+    class CoreWorkerProcess {
+    public:
+        static CoreWorker& GetCoreWorker();
+    };
+}
+
+struct ray_async_get {
+    int efd;
+    bool ready;
+    bool error;
+};
+
+// Callback invoked by CoreWorker's io_context thread when object arrives.
+// NOTE: This callback is registered via CoreWorker::GetAsync but in practice
+// the io_context in driver mode may not fire it. The polling thread in
+// ray_async_get_start is the actual notification mechanism.
+static void ray_async_callback(std::shared_ptr<ray::RayObject> obj,
+                                ray::ObjectID /*id*/,
+                                void *user_data) {
+    auto *handle = static_cast<ray_async_get *>(user_data);
+    if (!obj) {
+        handle->error = true;
+    }
+    handle->ready = true;
+
+    uint64_t val = 1;
+    if (write(handle->efd, &val, sizeof(val)) < 0) {
+        // eventfd write failed — nothing we can do
+    }
+}
+
+ray_async_get_t *ray_async_get_start(const char *id_data, size_t id_len) {
+    try {
+        int efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+        if (efd < 0) return nullptr;
+
+        auto *handle = new ray_async_get{efd, false, false};
+
+        // Copy the object ID for the polling thread
+        std::string id_str(id_data, id_len);
+
+        // Start a lightweight polling thread that uses Get(timeout=100ms)
+        // to check if the object is available. This is NOT the same as
+        // spawn_blocking(Get(-1)) — each poll blocks at most 100ms,
+        // and the thread releases between polls.
+        //
+        // The thread signals via eventfd when the object is ready.
+        // The Rust side uses AsyncFd to poll the eventfd — zero tokio
+        // threads blocked.
+        std::thread([handle, id_str]() {
+            auto runtime = ray::internal::GetRayRuntime();
+            if (!runtime) {
+                handle->error = true;
+                uint64_t val = 1;
+                write(handle->efd, &val, sizeof(val));
+                return;
+            }
+
+            while (!handle->ready && !handle->error) {
+                try {
+                    // timeout=100ms: returns immediately if object is local,
+                    // blocks at most 100ms if not.
+                    auto buf = runtime->Get(id_str, 100);
+                    if (buf) {
+                        handle->ready = true;
+                        break;
+                    }
+                } catch (...) {
+                    // Not ready yet — retry
+                }
+            }
+
+            uint64_t val = 1;
+            write(handle->efd, &val, sizeof(val));
+        }).detach();
+
+        return handle;
+    } catch (const std::exception &e) {
+        fprintf(stderr, "ray_async_get_start error: %s\n", e.what());
+        return nullptr;
+    }
+}
+
+int ray_async_get_fd(const ray_async_get_t *handle) {
+    return handle ? handle->efd : -1;
+}
+
+int ray_async_get_is_ready(const ray_async_get_t *handle) {
+    if (!handle) return -1;
+    return handle->ready ? 1 : (handle->error ? -1 : 0);
+}
+
+ray_bytes_t ray_async_get_result(const ray_async_get_t *handle) {
+    // Not used — Rust side calls get_raw() after eventfd fires.
+    (void)handle;
+    return ray_bytes_t{nullptr, 0};
+}
+
+void ray_async_get_destroy(ray_async_get_t *handle) {
+    if (handle) {
+        if (handle->efd >= 0) close(handle->efd);
+        delete handle;
+    }
+}

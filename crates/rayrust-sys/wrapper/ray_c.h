@@ -136,6 +136,32 @@ typedef ray_bytes_t (*ray_func_callback_t)(const ray_bytes_t *args, size_t arg_c
 /// `callback` is the C callback that will be invoked when the task executes.
 void ray_register_function(const char *func_name, ray_func_callback_t callback);
 
+// ─── Async Get (CoreWorker::GetAsync + eventfd) ──────────────
+
+/// Opaque handle for an async get request.
+/// Internally holds an eventfd and a pending result buffer.
+typedef struct ray_async_get ray_async_get_t;
+
+/// Start an async get for an object.
+/// Returns a heap-allocated ray_async_get_t, or NULL on error.
+/// The caller must free it with ray_async_get_destroy.
+ray_async_get_t *ray_async_get_start(const char *id_data, size_t id_len);
+
+/// Get the eventfd file descriptor for polling.
+/// Returns -1 on error.
+int ray_async_get_fd(const ray_async_get_t *handle);
+
+/// Check if the result is ready (non-blocking).
+/// Returns 1 if ready, 0 if not, -1 on error.
+int ray_async_get_is_ready(const ray_async_get_t *handle);
+
+/// Get the result data (only valid if is_ready returns 1).
+/// Returns a ray_bytes_t. On error, data=NULL.
+ray_bytes_t ray_async_get_result(const ray_async_get_t *handle);
+
+/// Destroy the handle and free resources.
+void ray_async_get_destroy(ray_async_get_t *handle);
+
 // ─── Memory Management ────────────────────────────────────────
 
 /// Free a ray_bytes_t returned by any ray_* function.

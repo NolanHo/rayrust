@@ -28,6 +28,11 @@ pub struct RayConfig {
     /// Node IP address to use when registering with the cluster.
     /// If empty, the C++ SDK auto-detects (may fail with multiple NICs).
     pub node_ip: String,
+    /// Runtime environment JSON string (e.g. `{"pip": ["pkg1", "pkg2"]}`).
+    /// If empty, no runtime_env is set.
+    pub runtime_env: String,
+    /// Directory for Ray logs. If empty, uses default.
+    pub log_dir: String,
 }
 
 impl RayConfig {
@@ -54,10 +59,21 @@ impl RayConfig {
     }
 
     /// Set the code search path (directories or .so files for the worker).
-    /// On the C++ SDK side, paths are joined with ':' and passed as
-    /// `--ray_code_search_path`.
     pub fn code_search_path(mut self, paths: Vec<String>) -> Self {
         self.code_search_path = paths;
+        self
+    }
+
+    /// Set the runtime environment JSON string.
+    /// Example: `{"pip": ["numpy", "pandas"]}` or `{"env_vars": {"FOO": "bar"}}`
+    pub fn runtime_env(mut self, json: impl Into<String>) -> Self {
+        self.runtime_env = json.into();
+        self
+    }
+
+    /// Set the log directory.
+    pub fn log_dir(mut self, dir: impl Into<String>) -> Self {
+        self.log_dir = dir.into();
         self
     }
 }
@@ -82,6 +98,8 @@ pub fn init_with_config(config: &RayConfig) -> Result<(), RayError> {
     let local_mode = if config.local_mode { 1 } else { 0 };
     let node_ip_c = to_cstring(&config.node_ip);
     let code_search_path_c = to_cstring(&config.code_search_path.join(":"));
+    let runtime_env_c = to_cstring(&config.runtime_env);
+    let log_dir_c = to_cstring(&config.log_dir);
 
     let ret = unsafe {
         rayrust_sys::ray_init(
@@ -89,6 +107,8 @@ pub fn init_with_config(config: &RayConfig) -> Result<(), RayError> {
             local_mode,
             node_ip_c.as_ptr(),
             code_search_path_c.as_ptr(),
+            runtime_env_c.as_ptr(),
+            log_dir_c.as_ptr(),
         )
     };
     if ret != 0 {
@@ -263,16 +283,27 @@ pub(crate) fn wait_raw(id: &[u8], timeout_ms: i32) -> Result<bool, RayError> {
 // ─── Task ─────────────────────────────────────────────────────
 
 /// Call a remote task by function name.
-/// Returns an ObjectRef for the result.
-pub(crate) fn task_call_inner(func_name: &str, args: &[&[u8]]) -> Result<ObjectRef<()>, RayError> {
+/// `is_ref[i] = true` means args[i] is a binary ObjectRef ID (pass by reference).
+/// `is_ref` can be empty slice to treat all args as values.
+pub(crate) fn task_call_inner(
+    func_name: &str,
+    args: &[&[u8]],
+    is_ref: &[bool],
+) -> Result<ObjectRef<()>, RayError> {
     let func_c = to_cstring(func_name);
     let args_arr = build_args_array(args);
+    let is_ref_ptr = if is_ref.is_empty() {
+        std::ptr::null()
+    } else {
+        is_ref.as_ptr()
+    };
 
     let bytes = unsafe {
         rayrust_sys::ray_task_call(
             func_c.as_ptr(),
             args_arr.as_ptr(),
             args_arr.len(),
+            is_ref_ptr,
         )
     };
 
@@ -285,10 +316,11 @@ pub(crate) fn task_call_inner(func_name: &str, args: &[&[u8]]) -> Result<ObjectR
 pub(crate) async fn task_call_inner_async(
     func_name: String,
     args: Vec<Vec<u8>>,
+    is_ref: Vec<bool>,
 ) -> Result<ObjectRef<()>, RayError> {
     tokio::task::spawn_blocking(move || {
         let args_ref: Vec<&[u8]> = args.iter().map(|v| v.as_slice()).collect();
-        task_call_inner(&func_name, &args_ref)
+        task_call_inner(&func_name, &args_ref, &is_ref)
     })
     .await
     .map_err(|e| RayError::Runtime(format!("task_call join error: {}", e)))?
@@ -525,7 +557,7 @@ pub fn cancel(obj_id: &[u8], force_kill: bool, recursive: bool) -> Result<(), Ra
         )
     };
     if ret != 0 {
-        return Err(RayError::Runtime("ray_cancel not implemented or failed".into()));
+        return Err(RayError::Runtime(format!("ray_cancel failed (code {})", ret)));
     }
     Ok(())
 }

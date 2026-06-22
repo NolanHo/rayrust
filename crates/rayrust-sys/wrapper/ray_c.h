@@ -33,9 +33,14 @@ typedef struct {
 ///   Pass NULL to auto-detect.
 /// `code_search_path` is a colon-separated list of directories or .so files
 ///   for the worker to search for remote functions. Pass NULL to skip.
+/// `runtime_env_json` is a JSON string for runtime_env (e.g. {"pip": ["pkg"]}).
+///   Pass NULL to skip.
+/// `log_dir` is the directory for Ray logs. Pass NULL for default.
 /// Returns 0 on success, -1 on failure.
 int ray_init(const char *address, int local_mode, const char *node_ip,
-             const char *code_search_path);
+             const char *code_search_path,
+             const char *runtime_env_json,
+             const char *log_dir);
 
 /// Returns true if ray::Init has been called.
 bool ray_is_initialized(void);
@@ -72,11 +77,15 @@ bool *ray_wait(const ray_bytes_t *ids, size_t count, int num_objects, int timeou
 /// Call a remote task by function name.
 /// `func_name` is a null-terminated C string (function names are ASCII).
 /// `args` is an array of msgpack-serialized arguments.
+/// `is_ref` is an array of booleans (same length as args). If is_ref[i] is true,
+///   args[i] is treated as a binary ObjectRef ID (pass by reference).
+///   Pass NULL to treat all args as values.
 /// Returns a ray_bytes_t containing the binary object ID of the result.
 /// On error, returns ray_bytes_t with data=NULL.
 ray_bytes_t ray_task_call(const char *func_name,
                            const ray_bytes_t *args,
-                           size_t arg_count);
+                           size_t arg_count,
+                           const bool *is_ref);
 
 /// Call a Python remote function.
 /// `module_name` and `function_name` are null-terminated C strings.

@@ -137,15 +137,12 @@ pub fn remote(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             let args_ref: Vec<&[u8]> = args_data.iter().map(|v| v.as_slice()).collect();
 
-            ::rayrust::task_call(#fn_name_str, &args_ref)
+            ::rayrust::task_call(#fn_name_str, &args_ref, &[])
                 .expect(concat!("ray task call failed: ", #fn_name_str))
                 .cast()
         }
 
         /// Submit this function as a remote task (async).
-        ///
-        /// Serializes args and submits the task on a blocking thread pool,
-        /// then returns an ObjectRef that can be awaited with `.get_async()`.
         pub async fn #remote_async_fn_name(#inputs) -> ::std::result::Result<::rayrust::ObjectRef<#return_type>, ::rayrust::RayError> {
             let args_data: Vec<Vec<u8>> = vec![
                 #(
@@ -154,7 +151,7 @@ pub fn remote(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 ),*
             ];
 
-            let obj_ref = ::rayrust::task_call_async(#fn_name_str, args_data).await?;
+            let obj_ref = ::rayrust::task_call_async(#fn_name_str, args_data, Vec::new()).await?;
             Ok(obj_ref.cast())
         }
     };

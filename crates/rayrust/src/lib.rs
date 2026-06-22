@@ -46,13 +46,16 @@ pub fn placement_group_remove(group_id: &[u8]) {
 // ─── Task / Actor convenience wrappers (crate root) ───────────
 
 /// Call a remote task by function name.
-pub fn task_call(func_name: &str, args: &[&[u8]]) -> Result<ObjectRef<()>, RayError> {
-    crate::runtime::task_call_inner(func_name, args)
+/// `args` are msgpack-serialized argument bytes.
+/// `is_ref` marks which args are ObjectRef IDs (pass by reference).
+///   Empty slice = all args are values.
+pub fn task_call(func_name: &str, args: &[&[u8]], is_ref: &[bool]) -> Result<ObjectRef<()>, RayError> {
+    crate::runtime::task_call_inner(func_name, args, is_ref)
 }
 
 /// Asynchronously call a remote task by function name.
-pub async fn task_call_async(func_name: &str, args: Vec<Vec<u8>>) -> Result<ObjectRef<()>, RayError> {
-    crate::runtime::task_call_inner_async(func_name.to_string(), args).await
+pub async fn task_call_async(func_name: &str, args: Vec<Vec<u8>>, is_ref: Vec<bool>) -> Result<ObjectRef<()>, RayError> {
+    crate::runtime::task_call_inner_async(func_name.to_string(), args, is_ref).await
 }
 
 /// Call a Python remote function.

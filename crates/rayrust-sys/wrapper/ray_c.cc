@@ -17,17 +17,37 @@
 #include <ray/api/internal_api.h>
 
 // Declare the exported function from libray_api.so.
-// This returns the SAME FunctionManager singleton that the worker uses,
-// avoiding the "singleton split" problem where FunctionManager::Instance()
-// in our translation unit creates a separate instance from the one in libray_api.so.
+// This returns the SAME FunctionManager singleton that the worker uses.
 //
 // IMPORTANT: Do NOT use extern "C" here. GetFunctionManager is a C++ function.
 // With extern "C", the linker resolves the symbol to the BOOST_DLL_ALIAS
 // variable (V type, in .data section), not the actual function (T type, in .text).
-// Calling a data address as code → SIGSEGV.
 namespace ray { namespace internal {
     FunctionManager &GetFunctionManager();
 }}
+
+// Forward declarations for CoreWorker (used by ray_cancel, ray_async_get, etc).
+// These symbols are exported from libray_api.so as T (text) symbols.
+// We match the ABI with minimal type declarations — no core_worker.h needed.
+namespace ray {
+    class RayObject;
+    class ObjectID { char _data[28]; };
+    class ActorID { char _data[16]; };
+}
+namespace ray::core {
+    using SetResultCallback =
+        std::function<void(std::shared_ptr<ray::RayObject>, ray::ObjectID, void*)>;
+    class CoreWorker {
+    public:
+        void GetAsync(const ray::ObjectID&, SetResultCallback, void*);
+        void CancelTask(const ray::ObjectID &, bool, bool);
+        void KillActor(const ray::ActorID &, bool, bool);
+    };
+    class CoreWorkerProcess {
+    public:
+        static CoreWorker& GetCoreWorker();
+    };
+}
 
 #include <cstring>
 #include <msgpack.hpp>
@@ -104,7 +124,9 @@ static ray_bytes_t dup_bytes(const std::string &s) {
 // ─── Lifecycle ────────────────────────────────────────────────
 
 int ray_init(const char *address, int local_mode, const char *node_ip,
-             const char *code_search_path) {
+             const char *code_search_path,
+             const char *runtime_env_json,
+             const char *log_dir) {
     ray::RayConfig config;
     if (address && address[0] != '\0') {
         config.address = address;
@@ -112,7 +134,6 @@ int ray_init(const char *address, int local_mode, const char *node_ip,
     config.local_mode = local_mode != 0;
 
     // Set code search path for worker to find .so with remote functions.
-    // The C++ SDK uses ':' as separator (like PATH).
     if (code_search_path && code_search_path[0] != '\0') {
         std::string paths(code_search_path);
         size_t start = 0, end;
@@ -127,7 +148,12 @@ int ray_init(const char *address, int local_mode, const char *node_ip,
         }
     }
 
-    // Build argv to pass node_ip_address via command-line flags.
+    // Set runtime_env from JSON string
+    if (runtime_env_json && runtime_env_json[0] != '\0') {
+        config.runtime_env = ray::RuntimeEnv::Deserialize(std::string(runtime_env_json));
+    }
+
+    // Build argv to pass node_ip_address and log_dir via command-line flags.
     int argc = 1;
     std::vector<std::string> arg_strings;
     std::vector<const char *> arg_ptrs;
@@ -141,6 +167,14 @@ int ray_init(const char *address, int local_mode, const char *node_ip,
         arg_ptrs.push_back(arg_strings[1].c_str());
         arg_ptrs.push_back(arg_strings[2].c_str());
         argc = 3;
+    }
+
+    if (log_dir && log_dir[0] != '\0') {
+        arg_strings.push_back("--ray_logs_dir");
+        arg_strings.push_back(log_dir);
+        arg_ptrs.push_back(arg_strings[argc].c_str());
+        arg_ptrs.push_back(arg_strings[argc + 1].c_str());
+        argc += 2;
     }
 
     try {
@@ -229,15 +263,24 @@ bool *ray_wait(const ray_bytes_t *ids, size_t count, int num_objects, int timeou
 
 // ─── Task ─────────────────────────────────────────────────────
 
-/// Helper: build TaskArg vector for CPP tasks (raw msgpack, no wrapping).
+/// Helper: build TaskArg vector for CPP tasks.
+/// `is_ref` array marks which args are ObjectRef references (pass by ID)
+/// vs value args (pass by serialized msgpack).
 static std::vector<ray::internal::TaskArg>
-build_task_args_cpp(const ray_bytes_t *args, size_t arg_count) {
+build_task_args_cpp(const ray_bytes_t *args, size_t arg_count,
+                    const bool *is_ref = nullptr) {
     std::vector<ray::internal::TaskArg> task_args;
     task_args.reserve(arg_count);
     for (size_t i = 0; i < arg_count; i++) {
         ray::internal::TaskArg arg;
-        arg.buf = msgpack::sbuffer(args[i].len);
-        arg.buf->write(args[i].data, args[i].len);
+        if (is_ref && is_ref[i]) {
+            // ObjectRef argument: pass by reference (object ID)
+            arg.id = std::string(args[i].data, args[i].len);
+        } else {
+            // Value argument: raw msgpack
+            arg.buf = msgpack::sbuffer(args[i].len);
+            arg.buf->write(args[i].data, args[i].len);
+        }
         task_args.push_back(std::move(arg));
     }
     return task_args;
@@ -286,7 +329,8 @@ build_task_args_python(const ray_bytes_t *args, size_t arg_count) {
 
 ray_bytes_t ray_task_call(const char *func_name,
                            const ray_bytes_t *args,
-                           size_t arg_count) {
+                           size_t arg_count,
+                           const bool *is_ref) {
     try {
         auto runtime = ray::internal::GetRayRuntime();
         if (!runtime) return ray_bytes_t{nullptr, 0};
@@ -294,7 +338,7 @@ ray_bytes_t ray_task_call(const char *func_name,
         std::string fn(func_name);
         ray::internal::RemoteFunctionHolder holder{std::move(fn)};
 
-        auto task_args = build_task_args_cpp(args, arg_count);
+        auto task_args = build_task_args_cpp(args, arg_count, is_ref);
 
         ray::internal::CallOptions options;
         std::string id = runtime->Call(holder, task_args, options);
@@ -525,12 +569,22 @@ ray_bytes_t ray_get_actor(const char *name, const char *ray_namespace) {
 }
 
 int ray_cancel(const char *id_data, size_t id_len, bool force_kill, bool recursive) {
-    // CoreWorker::CancelTask is not directly exposed via RayRuntime.
-    // The C++ SDK doesn't have a Cancel method on RayRuntime.
-    // This requires calling CoreWorker directly — skip for now.
-    (void)id_data; (void)id_len; (void)force_kill; (void)recursive;
-    fprintf(stderr, "ray_cancel: not yet implemented (requires CoreWorker::CancelTask)\n");
-    return -1;
+    try {
+        if (!id_data || id_len == 0) return -1;
+
+        // Construct ObjectID from binary data (28 bytes)
+        ray::ObjectID object_id;
+        std::memset(&object_id, 0, sizeof(object_id));
+        size_t copy_len = id_len < sizeof(object_id) ? id_len : sizeof(object_id);
+        std::memcpy(&object_id, id_data, copy_len);
+
+        auto &core_worker = ray::core::CoreWorkerProcess::GetCoreWorker();
+        core_worker.CancelTask(object_id, force_kill, recursive);
+        return 0;
+    } catch (const std::exception &e) {
+        fprintf(stderr, "ray_cancel error: %s\n", e.what());
+        return -1;
+    }
 }
 
 ray_bytes_t *ray_get_many(const ray_bytes_t *ids, size_t count, int timeout_ms) {
@@ -593,62 +647,12 @@ void ray_free_bools(bool *ptr) {
 
 // ─── Async Get (CoreWorker::GetAsync + eventfd) ──────────────
 //
-// This bypasses the C++ SDK's blocking Get() and calls
-// CoreWorker::GetAsync() directly, which is non-blocking.
-// When the object arrives, CoreWorker's io_context thread calls
-// our callback, which writes to an eventfd. The Rust side polls
-// the eventfd via tokio::io::AsyncFd — zero threads blocked.
-//
-// We do NOT include ray/core_worker/core_worker.h — it pulls in
-// protobuf/gRPC/absl headers not available in the pip package.
-// Instead we forward-declare the minimal types needed and the
-// linker resolves the symbols from libray_api.so.
-//
-// Hybrid approach: GetAsync notifies us when the object is ready,
-// then the Rust side does a fast blocking Get() (instant, since the
-// object is already in the local store). No thread is blocked
-// waiting for the object to arrive from a remote node.
+// Uses CoreWorker forward declarations from the top of this file.
+// Polling thread: Get(timeout=100ms) loop + eventfd notification.
 
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <thread>
-
-// ── Forward declarations matching Ray Core ABI ──
-//
-// These types must be in the correct namespaces so that C++ name
-// mangling produces the same symbol names as libray_api.so.
-// ObjectID is a simple POD type (28 bytes, #pragma pack(1), no vtable).
-// RayObject is opaque — we only store the shared_ptr pointer.
-// CoreWorker::GetAsync takes a std::function callback.
-
-namespace ray {
-    class RayObject;  // opaque — we never call methods on it
-
-    // ObjectID: matches ray::ObjectID ABI.
-    // The real type inherits BaseID<ObjectID> which is #pragma pack(1)
-    // with a uint8_t[28] member. No vtable, no virtual methods.
-    // We declare it with 28 bytes of storage so sizeof matches.
-    // Name mangling only cares about namespace::classname, not inheritance.
-    class ObjectID {
-        char _data[28];
-    };
-}
-
-namespace ray::core {
-    // Match CoreWorker::SetResultCallback type.
-    using SetResultCallback =
-        std::function<void(std::shared_ptr<ray::RayObject>, ray::ObjectID, void*)>;
-
-    class CoreWorker {
-    public:
-        void GetAsync(const ray::ObjectID&, SetResultCallback, void*);
-    };
-
-    class CoreWorkerProcess {
-    public:
-        static CoreWorker& GetCoreWorker();
-    };
-}
 
 struct ray_async_get {
     int efd;

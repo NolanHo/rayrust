@@ -68,7 +68,7 @@ fn main() {
     let arg2 = rayrust::serialize(&32i32).unwrap();
     let args: Vec<&[u8]> = vec![&arg1, &arg2];
 
-    match rayrust::task_call("add", &args) {
+    match rayrust::task_call("add", &args, &[]) {
         Ok(obj_ref) => {
             println!("Task 'add(10, 32)' submitted");
             let obj_ref: ObjectRef<i32> = obj_ref.cast();
@@ -84,7 +84,7 @@ fn main() {
     let arg_name = rayrust::serialize(&"Ray Cluster".to_string()).unwrap();
     let args_greet: Vec<&[u8]> = vec![&arg_name];
 
-    match rayrust::task_call("greet", &args_greet) {
+    match rayrust::task_call("greet", &args_greet, &[]) {
         Ok(obj_ref) => {
             println!("Task 'greet(\"Ray Cluster\")' submitted");
             let obj_ref: ObjectRef<String> = obj_ref.cast();
@@ -101,7 +101,7 @@ fn main() {
     let arg_b = rayrust::serialize(&6i64).unwrap();
     let args_mul: Vec<&[u8]> = vec![&arg_a, &arg_b];
 
-    match rayrust::task_call("multiply", &args_mul) {
+    match rayrust::task_call("multiply", &args_mul, &[]) {
         Ok(obj_ref) => {
             println!("Task 'multiply(7, 6)' submitted");
             let obj_ref: ObjectRef<i64> = obj_ref.cast();

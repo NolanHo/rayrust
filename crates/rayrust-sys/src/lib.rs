@@ -26,6 +26,8 @@ extern "C" {
         local_mode: c_int,
         node_ip: *const c_char,
         code_search_path: *const c_char,
+        runtime_env_json: *const c_char,
+        log_dir: *const c_char,
     ) -> c_int;
     pub fn ray_is_initialized() -> bool;
     pub fn ray_shutdown();
@@ -45,6 +47,7 @@ extern "C" {
         func_name: *const c_char,
         args: *const RayBytes,
         arg_count: usize,
+        is_ref: *const bool,
     ) -> RayBytes;
     pub fn ray_task_call_python(
         module_name: *const c_char,

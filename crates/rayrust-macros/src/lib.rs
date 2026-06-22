@@ -5,7 +5,8 @@
 //! Marks a function as a Ray remote task. Generates:
 //! - A C-compatible callback that deserializes args, calls the function, serializes result
 //! - A `register()` function that registers the callback with Ray's FunctionManager
-//! - A `{name}_remote()` caller that submits the task to the cluster
+//! - A `{name}_remote()` sync caller
+//! - A `{name}_remote_async()` async caller (tokio)
 //! - A `#[ctor]` auto-registration that runs when the .so is loaded by the Ray worker
 
 use proc_macro::TokenStream;
@@ -20,6 +21,7 @@ pub fn remote(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let fn_name_str = fn_name.to_string();
 
     let remote_fn_name = format_ident!("{}_remote", fn_name);
+    let remote_async_fn_name = format_ident!("{}_remote_async", fn_name);
     let register_fn_name = format_ident!("{}_register", fn_name);
     let callback_fn_name = format_ident!("__rayrust_callback_{}", fn_name);
     let ctor_name = format_ident!("__RAYRUST_CTOR_{}", fn_name);
@@ -119,16 +121,12 @@ pub fn remote(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         /// Auto-registration via #[ctor].
-        /// When this code is compiled into a cdylib (.so) and loaded by
-        /// the Ray worker process via dlopen, this constructor runs
-        /// automatically, registering the function before the worker
-        /// calls GetRemoteFunctions().
         #[::rayrust::ctor::ctor]
         fn #ctor_name() {
             #register_fn_name();
         }
 
-        /// Submit this function as a remote task.
+        /// Submit this function as a remote task (sync).
         pub fn #remote_fn_name(#inputs) -> ::rayrust::ObjectRef<#return_type> {
             let args_data: Vec<Vec<u8>> = vec![
                 #(
@@ -142,6 +140,22 @@ pub fn remote(_attr: TokenStream, item: TokenStream) -> TokenStream {
             ::rayrust::task_call(#fn_name_str, &args_ref)
                 .expect(concat!("ray task call failed: ", #fn_name_str))
                 .cast()
+        }
+
+        /// Submit this function as a remote task (async).
+        ///
+        /// Serializes args and submits the task on a blocking thread pool,
+        /// then returns an ObjectRef that can be awaited with `.get_async()`.
+        pub async fn #remote_async_fn_name(#inputs) -> ::std::result::Result<::rayrust::ObjectRef<#return_type>, ::rayrust::RayError> {
+            let args_data: Vec<Vec<u8>> = vec![
+                #(
+                    ::rayrust::serialize(&#arg_names)
+                        .expect(concat!("failed to serialize arg of ", #fn_name_str))
+                ),*
+            ];
+
+            let obj_ref = ::rayrust::task_call_async(#fn_name_str, args_data).await?;
+            Ok(obj_ref.cast())
         }
     };
 

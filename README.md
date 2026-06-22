@@ -128,34 +128,52 @@ Namespace: ea25ec74d033068b85a4edea355bfb8fd388eb52706bb5d8a788b303
 
 ## API
 
+### Sync
+
 ```rust
 use rayrust::prelude::*;
 
-// Init
-let config = RayConfig::new("192.168.42.141:6379")
-    .node_ip("192.168.42.106");
+let config = RayConfig::new("192.168.42.141:6379").node_ip("192.168.42.106");
 rayrust::init_with_config(&config)?;
 
-// Put / Get
 let obj = rayrust::put(&42i32);
 let val: i32 = rayrust::get(&obj)?;
-assert_eq!(val, 42);
-
-// String
-let obj = rayrust::put(&"hello".to_string());
-let val: String = rayrust::get(&obj)?;
-
-// Remote task (requires C++ worker with RAY_REMOTE registration)
-#[rayrust::remote]
-fn add(a: i32, b: i32) -> i32 { a + b }
-
-let arg1 = rayrust::serialize(&1i32)?;
-let arg2 = rayrust::serialize(&2i32)?;
-let obj_ref = rayrust::task_call("add", &[&arg1, &arg2])?;
-let result: i32 = obj_ref.cast().get()?;
-
 rayrust::shutdown();
 ```
+
+### Async (tokio)
+
+```rust
+use rayrust::prelude::*;
+
+#[tokio::main]
+async fn main() -> Result<(), RayError> {
+    rayrust::init("192.168.42.141:6379")?;
+
+    // Async put / get
+    let obj = rayrust::put_async(42i32).await?;
+    let val: i32 = obj.get_async().await?;
+
+    // Concurrent tasks with tokio::join!
+    #[rayrust::remote]
+    fn add(a: i32, b: i32) -> i32 { a + b }
+
+    let (r1, r2) = tokio::join!(
+        add_remote_async(1, 2),
+        add_remote_async(3, 4),
+    );
+    let (v1, v2) = tokio::join!(
+        r1?.get_async(),
+        r2?.get_async(),
+    );
+
+    rayrust::shutdown();
+    Ok(())
+}
+```
+
+Async methods wrap blocking C++ FFI calls in `tokio::task::spawn_blocking`,
+so the tokio runtime stays responsive while waiting for Ray operations.
 
 ## Workspace structure
 
@@ -191,7 +209,7 @@ rayrust/
 
 1. **Remote tasks in cluster mode**: ✅ **Solved!** Rust functions compiled into a `cdylib` `.so` are auto-registered via `#[ctor]` when the Ray worker loads the `.so`. See `rayrust-example-worker` crate and `cluster_remote_task` example.
 2. **C++ SDK feature ceiling**: This SDK wraps the C++ SDK, so it inherits its limitations. No Ray Serve, Ray Train, Ray Tune, or RLlib.
-3. **Synchronous API**: `get()` blocks. Async wrappers (tokio) are planned.
+3. **Synchronous + Asynchronous API**: Both sync (`get()`) and async (`get_async()`) APIs are provided. Async wraps blocking C++ FFI calls in `tokio::task::spawn_blocking`.
 4. **Cross-language calls**: FFI layer supports calling Python/Java tasks, but not yet exposed in the safe API.
 
 ## License

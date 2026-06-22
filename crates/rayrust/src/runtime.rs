@@ -121,10 +121,32 @@ pub fn put<T: serde::Serialize>(value: &T) -> ObjectRef<T> {
         .unwrap_or_else(|e| panic!("ray::put failed: {}", e))
 }
 
+/// Asynchronously put an object into the object store.
+pub async fn put_async<T>(value: T) -> Result<ObjectRef<T>, RayError>
+where
+    T: serde::Serialize + Send + 'static,
+{
+    let bytes = tokio::task::spawn_blocking(move || serialize(&value))
+        .await
+        .map_err(|e| RayError::Runtime(format!("serialize join error: {}", e)))??;
+    let id = tokio::task::spawn_blocking(move || put_raw(&bytes))
+        .await
+        .map_err(|e| RayError::Runtime(format!("put_raw join error: {}", e)))??;
+    Ok(ObjectRef::from_id(id))
+}
+
 /// Get an object from the object store.
 /// Blocks until the object is available.
 pub fn get<T: serde::de::DeserializeOwned>(obj_ref: &ObjectRef<T>) -> Result<T, RayError> {
     obj_ref.get()
+}
+
+/// Asynchronously get an object from the object store.
+pub async fn get_async<T>(obj_ref: &ObjectRef<T>) -> Result<T, RayError>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    obj_ref.get_async().await
 }
 
 /// Wait for objects to be locally available.
@@ -228,6 +250,20 @@ pub(crate) fn task_call_inner(func_name: &str, args: &[&[u8]]) -> Result<ObjectR
     let guard = CBytesGuard::from(bytes)
         .ok_or_else(|| RayError::Ffi(format!("ray_task_call '{}' returned null", func_name)))?;
     Ok(ObjectRef::from_id(guard.as_slice().to_vec()))
+}
+
+/// Asynchronously call a remote task by function name.
+/// Serializes args and submits the task on a blocking thread.
+pub(crate) async fn task_call_inner_async(
+    func_name: String,
+    args: Vec<Vec<u8>>,
+) -> Result<ObjectRef<()>, RayError> {
+    tokio::task::spawn_blocking(move || {
+        let args_ref: Vec<&[u8]> = args.iter().map(|v| v.as_slice()).collect();
+        task_call_inner(&func_name, &args_ref)
+    })
+    .await
+    .map_err(|e| RayError::Runtime(format!("task_call join error: {}", e)))?
 }
 
 // ─── Actor ────────────────────────────────────────────────────

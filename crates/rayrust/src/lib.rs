@@ -2,23 +2,24 @@
 //!
 //! This crate wraps the Ray C++ SDK via a C ABI layer, providing
 //! idiomatic Rust APIs for Ray's core distributed primitives:
-//! - Object store (put/get/wait)
-//! - Remote tasks
+//! - Object store (put/get/wait) — sync and async
+//! - Remote tasks — sync and async
 //! - Actors
 //! - Placement groups
 //!
-//! # Quick Start
+//! # Quick Start (async)
 //! ```no_run
 //! use rayrust::prelude::*;
 //!
-//! fn main() -> Result<(), RayError> {
-//!     ray::init("192.168.42.141:6379")?;
+//! #[tokio::main]
+//! async fn main() -> Result<(), RayError> {
+//!     rayrust::init("192.168.42.141:6379")?;
 //!
-//!     let obj = ray::put(&42i32);
-//!     let val: i32 = ray::get(&obj)?;
+//!     let obj = rayrust::put(&42i32);
+//!     let val: i32 = obj.get_async().await?;
 //!     assert_eq!(val, 42);
 //!
-//!     ray::shutdown();
+//!     rayrust::shutdown();
 //!     Ok(())
 //! }
 //! ```
@@ -37,7 +38,7 @@ pub use ctor;
 pub use error::RayError;
 pub use object_ref::ObjectRef;
 pub use runtime::{
-    get_namespace, init, init_with_config, is_initialized, put, get, wait,
+    get_namespace, init, init_with_config, is_initialized, put, put_async, get, get_async, wait,
     was_current_actor_restarted, shutdown, ActorHandle, RayConfig,
 };
 pub use serialize::{deserialize, serialize};
@@ -50,6 +51,11 @@ pub use rayrust_macros::remote;
 /// Call a remote task by function name.
 pub fn task_call(func_name: &str, args: &[&[u8]]) -> Result<ObjectRef<()>, RayError> {
     crate::runtime::task_call_inner(func_name, args)
+}
+
+/// Asynchronously call a remote task by function name.
+pub async fn task_call_async(func_name: &str, args: Vec<Vec<u8>>) -> Result<ObjectRef<()>, RayError> {
+    crate::runtime::task_call_inner_async(func_name.to_string(), args).await
 }
 
 /// Create an actor by factory function name.
@@ -71,8 +77,14 @@ pub fn actor_kill(actor_id: &[u8], no_restart: bool) {
 pub mod prelude {
     pub use crate::error::RayError;
     pub use crate::object_ref::ObjectRef;
-    pub use crate::runtime::{ActorHandle, RayConfig, init, init_with_config, is_initialized, put, get, wait, shutdown};
+    pub use crate::runtime::{
+        ActorHandle, RayConfig, init, init_with_config, is_initialized,
+        put, put_async, get, get_async, wait, shutdown,
+    };
     pub use crate::serialize::{deserialize, serialize};
-    pub use crate::{actor_call, actor_create, actor_kill, get_namespace, task_call, was_current_actor_restarted};
+    pub use crate::{
+        actor_call, actor_create, actor_kill, get_namespace,
+        task_call, task_call_async, was_current_actor_restarted,
+    };
     pub use rayrust_macros::remote;
 }

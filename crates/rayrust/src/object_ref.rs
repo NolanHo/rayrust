@@ -2,6 +2,10 @@
 //!
 //! The object ID is stored as `Vec<u8>` because Ray's ObjectID::Binary()
 //! may contain null bytes.
+//!
+//! Both sync (`get()`) and async (`get_async()`) methods are provided.
+//! The async variants use `tokio::task::spawn_blocking` to avoid blocking
+//! the tokio runtime during Ray's blocking C++ FFI calls.
 
 use std::marker::PhantomData;
 
@@ -11,7 +15,8 @@ use crate::serialize::deserialize;
 /// A reference to an object stored in the Ray object store.
 ///
 /// Similar to Python's `ray.ObjectRef`. The object may or may not be
-/// available yet — call `get()` to retrieve the value (blocks until ready).
+/// available yet — call `get()` (sync) or `get_async()` (async) to
+/// retrieve the value.
 #[derive(Debug, Clone)]
 pub struct ObjectRef<T> {
     pub(crate) id: Vec<u8>,
@@ -50,8 +55,35 @@ impl<T> ObjectRef<T> {
             .and_then(|bytes| deserialize(&bytes))
     }
 
+    /// Asynchronously retrieve the object value.
+    ///
+    /// This wraps the blocking C++ `Get` call in `tokio::task::spawn_blocking`,
+    /// allowing other tasks to run on the tokio runtime while waiting.
+    pub async fn get_async(&self) -> Result<T, RayError>
+    where
+        T: serde::de::DeserializeOwned + Send + 'static,
+    {
+        let id = self.id.clone();
+        let bytes = tokio::task::spawn_blocking(move || crate::runtime::get_raw(&id))
+            .await
+            .map_err(|e| RayError::Runtime(format!("spawn_blocking join error: {}", e)))??;
+        deserialize(&bytes)
+    }
+
+    /// Asynchronously retrieve the object value with a timeout.
+    pub async fn get_timeout_async(&self, timeout_ms: i32) -> Result<T, RayError>
+    where
+        T: serde::de::DeserializeOwned + Send + 'static,
+    {
+        let id = self.id.clone();
+        let bytes =
+            tokio::task::spawn_blocking(move || crate::runtime::get_raw_timeout(&id, timeout_ms))
+                .await
+                .map_err(|e| RayError::Runtime(format!("spawn_blocking join error: {}", e)))??;
+        deserialize(&bytes)
+    }
+
     /// Cast the phantom type parameter.
-    /// Safe because `T` is purely a phantom type.
     pub fn cast<U>(self) -> ObjectRef<U> {
         ObjectRef::from_id(self.id)
     }

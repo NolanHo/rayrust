@@ -28,6 +28,9 @@ pub mod object_ref;
 pub mod runtime;
 pub mod serialize;
 
+/// Re-export of the raw FFI crate for macro-generated code.
+pub use rayrust_sys as sys;
+
 pub use error::RayError;
 pub use object_ref::ObjectRef;
 pub use runtime::{

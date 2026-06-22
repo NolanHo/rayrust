@@ -13,12 +13,62 @@
 #include <ray/api/ray_runtime.h>
 #include <ray/api/ray_runtime_holder.h>
 #include <ray/api/serializer.h>
+#include <ray/api/function_manager.h>
 
 #include <cstring>
 #include <msgpack.hpp>
 #include <new>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+// ─── Function Registration ────────────────────────────────────
+
+// Global map of Rust function callbacks, indexed by function name.
+// The C++ lambda in FunctionManager captures the function name and
+// looks up the callback here.
+static std::unordered_map<std::string, ray_func_callback_t> g_rust_functions;
+
+static msgpack::sbuffer invoke_rust_function(const std::string &func_name,
+                                              const ray::internal::ArgsBufferList &args_buffer) {
+    auto it = g_rust_functions.find(func_name);
+    if (it == g_rust_functions.end()) {
+        throw std::runtime_error("Rust function not found: " + func_name);
+    }
+
+    // Build ray_bytes_t array from ArgsBufferList
+    std::vector<ray_bytes_t> args_arr;
+    args_arr.reserve(args_buffer.size());
+    for (const auto &buf : args_buffer) {
+        args_arr.push_back(ray_bytes_t{buf.data(), buf.size()});
+    }
+
+    // Call the Rust callback
+    ray_bytes_t result = it->second(args_arr.data(), args_arr.size());
+
+    // Copy result into msgpack::sbuffer and free the C-allocated data
+    msgpack::sbuffer sbuf(result.len);
+    sbuf.write(result.data, result.len);
+    std::free(const_cast<char *>(result.data));
+
+    return sbuf;
+}
+
+void ray_register_function(const char *func_name, ray_func_callback_t callback) {
+    std::string name(func_name);
+    g_rust_functions[name] = callback;
+
+    // Register with FunctionManager. GetRemoteFunctions() returns const refs
+    // to the internal maps, but the underlying maps are non-const members.
+    // We const_cast to get mutable access and insert our callback.
+    auto &fm = ray::internal::FunctionManager::Instance();
+    auto [map_ref, _] = fm.GetRemoteFunctions();
+    auto &map = const_cast<ray::internal::RemoteFunctionMap_t &>(map_ref);
+
+    map.emplace(name, [name](const ray::internal::ArgsBufferList &args) -> msgpack::sbuffer {
+        return invoke_rust_function(name, args);
+    });
+}
 
 // ─── Helpers ──────────────────────────────────────────────────
 

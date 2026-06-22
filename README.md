@@ -4,17 +4,28 @@ Rust SDK for [Ray](https://ray.io) distributed computing — wraps the Ray C++ S
 
 ## Status
 
-🚧 **PoC (Proof of Concept)** — core Put/Get verified against a live Ray cluster.
+🚧 **PoC (Proof of Concept)** — core Put/Get + remote task (local mode) verified against a live Ray cluster.
 
-| Feature | Status |
-|---|---|
-| `ray::init` (cluster mode) | ✅ |
-| `ray::put` / `ray::get` | ✅ |
-| `ray::wait` | ✅ (API ready, untested) |
-| `ray::get_namespace` | ✅ |
-| `#[ray::remote]` task | ⚠️ Macro ready, needs C++ worker with `RAY_REMOTE` registration |
-| Actor | ⚠️ FFI layer ready, untested |
-| Placement Group | ⚠️ FFI layer ready, untested |
+| Feature | Local Mode | Cluster Mode |
+|---|---|---|
+| `ray::init` | ✅ | ✅ |
+| `ray::put` / `ray::get` | ✅ | ✅ |
+| `ray::wait` | ✅ (API ready) | ✅ (API ready) |
+| `ray::get_namespace` | ✅ | ✅ |
+| `#[ray::remote]` task | ✅ `add(1,2)=3`, `greet("Ray")="Hello, Ray!"` | ⚠️ See below |
+| Actor | ⚠️ FFI ready, untested | ⚠️ FFI ready, untested |
+| Placement Group | ⚠️ FFI ready, untested | ⚠️ FFI ready, untested |
+
+### Remote task in cluster mode
+
+Local mode works fully: `#[remote]` macro generates a C callback, registers it with `FunctionManager`, and the local runtime executes it directly.
+
+In cluster mode, the driver submits the task by function name, but **execution happens in a separate worker process** started by Ray. The C++ worker loads functions from shared libraries (`.so`) registered via `RAY_REMOTE`. Rust functions compiled into the driver binary are not visible to the worker process.
+
+**Workarounds** (planned for future iteration):
+- Compile Rust remote functions into a C-compatible `.so` that the worker can load
+- Use cross-language calls: `ray::task_python("module", "func")` to invoke Python functions
+- Implement a native Rust worker that registers functions at startup
 
 ## Architecture
 
@@ -57,6 +68,7 @@ Rust SDK for [Ray](https://ray.io) distributed computing — wraps the Ray C++ S
 - **Binary-safe IDs**: Ray `ObjectID::Binary()` may contain null bytes. All ID parameters use `(ptr, len)` pairs, not null-terminated strings.
 - **`_GLIBCXX_USE_CXX11_ABI=0`**: `libray_api.so` is built with Bazel which sets the old C++ ABI. The wrapper must match to avoid `std::string` memory layout mismatch.
 - **`--ray_node_ip_address`**: Required when the node has multiple NICs. Auto-detection picks the wrong interface.
+- **Function registration**: `FunctionManager::GetRemoteFunctions()` returns const refs to internal maps. We `const_cast` to insert Rust callbacks — a pragmatic approach that avoids `#define private public` (which breaks standard library headers).
 - **Serialization**: Rust uses `rmp-serde` (msgpack via serde). C++ SDK uses `msgpack::pack`. Both produce raw msgpack — compatible without extra wrapping.
 
 ## Quick Start
@@ -172,7 +184,7 @@ rayrust/
 
 ## Known limitations
 
-1. **Remote tasks**: The `#[ray::remote]` macro generates the driver-side caller, but the worker process needs functions registered via C++ `RAY_REMOTE` macro in a shared library. A Rust-native registration mechanism is planned.
+1. **Remote tasks in cluster mode**: The `#[ray::remote]` macro generates a C callback and registers it with `FunctionManager` in the **driver process**. In local mode, the driver IS the worker, so it works. In cluster mode, the task executes in a **separate worker process** started by Ray, which loads functions from C++ shared libraries (`.so` with `RAY_REMOTE`). Rust functions in the driver binary are not visible to the worker. See "Remote task in cluster mode" above.
 2. **C++ SDK feature ceiling**: This SDK wraps the C++ SDK, so it inherits its limitations. No Ray Serve, Ray Train, Ray Tune, or RLlib.
 3. **Synchronous API**: `get()` blocks. Async wrappers (tokio) are planned.
 4. **Cross-language calls**: FFI layer supports calling Python/Java tasks, but not yet exposed in the safe API.

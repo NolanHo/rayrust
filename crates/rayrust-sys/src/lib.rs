@@ -65,6 +65,12 @@ extern "C" {
     ) -> RayBytes;
     pub fn ray_placement_group_remove(group_id_data: *const c_char, group_id_len: usize);
 
+    // Function Registration
+    pub fn ray_register_function(
+        func_name: *const c_char,
+        callback: extern "C" fn(args: *const RayBytes, arg_count: usize) -> RayBytes,
+    );
+
     // Misc
     pub fn ray_was_current_actor_restarted() -> bool;
     pub fn ray_get_namespace() -> RayBytes;

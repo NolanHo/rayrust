@@ -119,6 +119,20 @@ bool ray_was_current_actor_restarted(void);
 /// Returns a ray_bytes_t containing the namespace string.
 ray_bytes_t ray_get_namespace(void);
 
+// ─── Function Registration ────────────────────────────────────
+
+/// Callback type for a Rust remote function.
+/// Receives an array of msgpack-serialized argument buffers.
+/// Returns a heap-allocated ray_bytes_t containing the msgpack-serialized result.
+/// The caller (C wrapper) will free the returned data with free().
+typedef ray_bytes_t (*ray_func_callback_t)(const ray_bytes_t *args, size_t arg_count);
+
+/// Register a Rust function as a Ray remote task.
+/// Must be called before ray_init (or at least before the first task call).
+/// `func_name` is the name used with ray_task_call.
+/// `callback` is the C callback that will be invoked when the task executes.
+void ray_register_function(const char *func_name, ray_func_callback_t callback);
+
 // ─── Memory Management ────────────────────────────────────────
 
 /// Free a ray_bytes_t returned by any ray_* function.

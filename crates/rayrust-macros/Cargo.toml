@@ -2,6 +2,11 @@
 name = "rayrust-macros"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+description = "Proc macros for rayrust: #[remote] and #[actor] code generation"
+repository = "https://github.com/NolanHo/rayrust"
+keywords = ["ray", "distributed", "macro", "proc-macro"]
+categories = ["api-bindings", "development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true

@@ -24,7 +24,7 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    parse_macro_input, FnArg, ImplItem, ItemFn, ItemImpl, ReturnType, Type, Visibility,
+    parse_macro_input, FnArg, ImplItem, ItemFn, ItemImpl, ReturnType, Type,
 };
 
 #[proc_macro_attribute]
@@ -282,10 +282,9 @@ pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Generate member callbacks
     let member_callbacks: Vec<_> = methods.iter()
-        .map(|(method_ident, m_args, ret_type)| {
+        .map(|(method_ident, m_args, _ret_type)| {
             let cb_name = callback_name(&type_name, &method_ident.to_string());
             let cb_ident = format_ident!("{}", cb_name);
-            let reg_name = format!("{}::{}", factory_str, method_ident);
             let m_arg_names: Vec<_> = m_args.iter().map(|(p, _)| quote! { #p }).collect();
             let m_arg_deserialize: Vec<_> = m_args.iter()
                 .enumerate()

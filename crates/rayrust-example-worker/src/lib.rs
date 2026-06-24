@@ -9,10 +9,6 @@
 //!   4. Worker can now execute Rust remote tasks and actors!
 
 use rayrust::remote;
-use rayrust::serialize;
-use rayrust::sys::{to_cstring, RayBytes};
-use std::alloc::{alloc, Layout};
-use std::ptr;
 
 /// Simple addition task.
 #[remote]
@@ -70,25 +66,4 @@ impl Counter {
     fn reset(&mut self) {
         self.value = 0;
     }
-}
-
-// ─── Legacy helpers (for backward compat with manual actor code) ─────────
-
-/// Helper: serialize result to heap-allocated RayBytes
-fn to_ray_bytes(data: &[u8]) -> RayBytes {
-    let layout = Layout::array::<u8>(data.len()).unwrap();
-    let buf = unsafe { alloc(layout) };
-    if !buf.is_null() {
-        unsafe { ptr::copy_nonoverlapping(data.as_ptr(), buf, data.len()) };
-    }
-    RayBytes {
-        data: buf as *const std::os::raw::c_char,
-        len: data.len(),
-    }
-}
-
-/// Helper: read arg by index
-fn read_arg<T: serde::de::DeserializeOwned>(args: *const RayBytes, idx: usize) -> Option<T> {
-    let raw = unsafe { std::slice::from_raw_parts((*args.add(idx)).data as *const u8, (*args.add(idx)).len) };
-    rayrust::deserialize(raw).ok()
 }

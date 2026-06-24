@@ -377,7 +377,7 @@ pub(crate) fn task_call_inner(
 ) -> Result<ObjectRef<()>, RayError> {
     let func_c = to_cstring(func_name);
     let args_arr = build_args_array(args);
-    let is_ref_ptr = if is_ref.is_empty() {
+    let _is_ref_ptr = if is_ref.is_empty() {
         std::ptr::null()
     } else {
         is_ref.as_ptr()
@@ -388,7 +388,7 @@ pub(crate) fn task_call_inner(
             func_c.as_ptr(),
             args_arr.as_ptr(),
             args_arr.len(),
-            is_ref_ptr,
+            _is_ref_ptr,
         )
     };
 
@@ -407,7 +407,7 @@ pub(crate) fn task_call_with_resources_inner(
 ) -> Result<ObjectRef<()>, RayError> {
     let func_c = to_cstring(func_name);
     let args_arr = build_args_array(args);
-    let is_ref_ptr = if is_ref.is_empty() {
+    let _is_ref_ptr = if is_ref.is_empty() {
         std::ptr::null()
     } else {
         is_ref.as_ptr()
@@ -425,7 +425,7 @@ pub(crate) fn task_call_with_resources_inner(
             func_c.as_ptr(),
             args_arr.as_ptr(),
             args_arr.len(),
-            is_ref_ptr,
+            _is_ref_ptr,
             resources_json,
         )
     };
@@ -462,7 +462,7 @@ pub(crate) fn task_call_python_inner(
     let module_c = to_cstring(module);
     let func_c = to_cstring(function);
     let args_arr = build_args_array(args);
-    let is_ref_ptr = if is_ref.is_empty() {
+    let _is_ref_ptr = if is_ref.is_empty() {
         std::ptr::null()
     } else {
         is_ref.as_ptr()
@@ -474,7 +474,7 @@ pub(crate) fn task_call_python_inner(
             func_c.as_ptr(),
             args_arr.as_ptr(),
             args_arr.len(),
-            is_ref_ptr,
+            _is_ref_ptr,
         )
     };
 
@@ -489,6 +489,7 @@ pub(crate) fn task_call_python_inner(
 #[derive(Debug, Clone)]
 pub struct ActorHandle {
     pub(crate) id: Vec<u8>,
+    #[allow(dead_code)]
     pub(crate) is_python: bool,
 }
 
@@ -513,7 +514,7 @@ pub(crate) fn actor_create_inner(
 ) -> Result<ActorHandle, RayError> {
     let func_c = to_cstring(func_name);
     let args_arr = build_args_array(args);
-    let is_ref_ptr = if is_ref.is_empty() {
+    let _is_ref_ptr = if is_ref.is_empty() {
         std::ptr::null()
     } else {
         is_ref.as_ptr()
@@ -629,7 +630,7 @@ pub(crate) fn actor_call_python_inner(
 ) -> Result<Vec<u8>, RayError> {
     let method_c = to_cstring(method_name);
     let args_arr = build_args_array(args);
-    let is_ref_ptr = if is_ref.is_empty() {
+    let _is_ref_ptr = if is_ref.is_empty() {
         std::ptr::null()
     } else {
         is_ref.as_ptr()
@@ -642,7 +643,7 @@ pub(crate) fn actor_call_python_inner(
             method_c.as_ptr(),
             args_arr.as_ptr(),
             args_arr.len(),
-            is_ref_ptr,
+            _is_ref_ptr,
         )
     };
 

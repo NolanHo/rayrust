@@ -2,7 +2,18 @@
 name = "rayrust-sys"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+description = "FFI bindings to the Ray C++ SDK via a C ABI wrapper"
+repository = "https://github.com/NolanHo/rayrust"
+keywords = ["ray", "distributed", "ffi", "cpp"]
+categories = ["api-bindings", "external-ffi-bindings"]
 links = "ray_c"
+include = [
+    "src/",
+    "wrapper/",
+    "build.rs",
+    "Cargo.toml",
+]
 
 [build-dependencies]
 cc = "1.0"

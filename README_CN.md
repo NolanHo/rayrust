@@ -248,9 +248,10 @@ libray_api.so（Ray C++ SDK）  ->  Ray Core (raylet / GCS / object store)
 
 Rust vs Python 在 Ray 集群上（500 个任务）：
 
+![Benchmark](docs/benchmark.svg)
+
 | 指标 | Rust | Python | 加速比 |
 |---|---|---|---|
-| 同步吞吐 | 927 tasks/sec | 1089 tasks/sec | 0.85x |
 | 异步吞吐 | 4744 tasks/sec | 1918 tasks/sec | **2.5x** |
 | 延迟（中位数） | 617µs | 950µs | **1.5x** |
 | 计算（sum 0..1M） | 2.8ms | 652ms | **234x** |

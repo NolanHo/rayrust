@@ -32,20 +32,47 @@ pub fn multiply(a: i64, b: i64) -> i64 {
     a * b
 }
 
+/// CPU-intensive: sum of 0..n.
+#[remote]
+pub fn compute(n: i64) -> i64 {
+    (0..n).sum()
+}
+
 /// Async task: simulates I/O with sleep, then returns sum.
-/// The #[remote] macro detects `async fn` and generates a callback
-/// that uses a tokio current-thread runtime to execute the future.
 #[remote]
 pub async fn async_sum(a: i64, b: i64) -> i64 {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     a + b
 }
 
-// ─── Rust Actor: Counter ──────────────────────────────────────
+// ─── Rust Actor: Counter (using #[rayrust::actor] macro) ───────
 
+/// A simple counter actor.
 struct Counter {
     value: i64,
 }
+
+#[rayrust::actor]
+impl Counter {
+    fn new(start: i64) -> Self {
+        Counter { value: start }
+    }
+
+    fn increment(&mut self, n: i64) -> i64 {
+        self.value += n;
+        self.value
+    }
+
+    fn get(&self) -> i64 {
+        self.value
+    }
+
+    fn reset(&mut self) {
+        self.value = 0;
+    }
+}
+
+// ─── Legacy helpers (for backward compat with manual actor code) ─────────
 
 /// Helper: serialize result to heap-allocated RayBytes
 fn to_ray_bytes(data: &[u8]) -> RayBytes {
@@ -64,78 +91,4 @@ fn to_ray_bytes(data: &[u8]) -> RayBytes {
 fn read_arg<T: serde::de::DeserializeOwned>(args: *const RayBytes, idx: usize) -> Option<T> {
     let raw = unsafe { std::slice::from_raw_parts((*args.add(idx)).data as *const u8, (*args.add(idx)).len) };
     rayrust::deserialize(raw).ok()
-}
-
-/// Factory: creates a Counter, returns the raw pointer as uint64_t.
-#[no_mangle]
-pub extern "C" fn __rayrust_actor_factory_counter(
-    args: *const RayBytes,
-    arg_count: usize,
-) -> RayBytes {
-    let start: i64 = if arg_count > 0 {
-        read_arg(args, 0).unwrap_or(0)
-    } else {
-        0
-    };
-
-    let counter = Box::new(Counter { value: start });
-    let ptr_val = Box::into_raw(counter) as u64;
-
-    let result = serialize(&ptr_val).expect("failed to serialize actor ptr");
-    to_ray_bytes(&result)
-}
-
-/// Register the factory as a normal remote function.
-#[ctor::ctor]
-fn __register_counter_factory() {
-    let name = "__rayrust_actor_factory_counter";
-    let name_c = to_cstring(name);
-    unsafe {
-        rayrust::sys::ray_register_function(name_c.as_ptr(), __rayrust_actor_factory_counter);
-    }
-}
-
-/// Member function: Counter::increment(n)
-#[no_mangle]
-pub extern "C" fn __rayrust_member_counter_increment(
-    actor_ptr: u64,
-    args: *const RayBytes,
-    arg_count: usize,
-) -> RayBytes {
-    let counter = unsafe { &mut *(actor_ptr as *mut Counter) };
-
-    let n: i64 = if arg_count > 0 {
-        read_arg(args, 0).unwrap_or(1)
-    } else {
-        1
-    };
-
-    counter.value += n;
-    let result = serialize(&counter.value).expect("failed to serialize result");
-    to_ray_bytes(&result)
-}
-
-/// Member function: Counter::get()
-#[no_mangle]
-pub extern "C" fn __rayrust_member_counter_get(
-    actor_ptr: u64,
-    _args: *const RayBytes,
-    _arg_count: usize,
-) -> RayBytes {
-    let counter = unsafe { &*(actor_ptr as *const Counter) };
-    let result = serialize(&counter.value).expect("failed to serialize result");
-    to_ray_bytes(&result)
-}
-
-/// Register member functions.
-#[ctor::ctor]
-fn __register_counter_members() {
-    let reg = |name: &str, cb: extern "C" fn(u64, *const RayBytes, usize) -> RayBytes| {
-        let name_c = to_cstring(name);
-        unsafe {
-            rayrust::sys::ray_register_member_function(name_c.as_ptr(), cb);
-        }
-    };
-    reg("__rayrust_actor_factory_counter::increment", __rayrust_member_counter_increment);
-    reg("__rayrust_actor_factory_counter::get", __rayrust_member_counter_get);
 }

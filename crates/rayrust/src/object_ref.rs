@@ -58,6 +58,20 @@ impl<T> ObjectRef<T> {
         }
     }
 
+    /// Retrieve the object as a generic msgpack Value (blocks until ready).
+    ///
+    /// Useful when the exact type is unknown at compile time, e.g. when
+    /// calling a Python function that returns a complex/nested structure.
+    /// The `is_xlang` flag is respected automatically.
+    pub fn get_value(&self) -> Result<rmpv::Value, RayError> {
+        let bytes = crate::runtime::get_raw(&self.id)?;
+        if self.is_xlang {
+            crate::serialize::deserialize_xlang_value(&bytes)
+        } else {
+            crate::serialize::deserialize_value(&bytes)
+        }
+    }
+
     /// Retrieve the object value with a timeout (in milliseconds).
     pub fn get_timeout(&self, timeout_ms: i32) -> Result<T, RayError>
     where
@@ -116,6 +130,46 @@ impl<T> ObjectRef<T> {
         } else {
             deserialize(&bytes)
         }
+    }
+
+    /// Asynchronously retrieve the object as a generic msgpack Value.
+    ///
+    /// Uses the same polling mechanism as `get_async()`.
+    /// Useful for Python cross-language calls with unknown return types.
+    pub async fn get_value_async(&self) -> Result<rmpv::Value, RayError> {
+        self.get_value_timeout_async(std::time::Duration::from_secs(300)).await
+    }
+
+    /// Asynchronously retrieve the object as a generic msgpack Value with timeout.
+    pub async fn get_value_timeout_async(&self, timeout: std::time::Duration) -> Result<rmpv::Value, RayError> {
+        let id = self.id.clone();
+        let handle = AsyncGetHandle::new(id);
+        let efd = handle.eventfd();
+        if efd < 0 {
+            return Err(RayError::Ffi("invalid eventfd".into()));
+        }
+        let ready = poll_eventfd(efd, timeout).await;
+        drop(handle);
+        if !ready {
+            return Err(RayError::Runtime(format!(
+                "get_value_async timed out after {:?}", timeout
+            )));
+        }
+        let id_for_get = self.id.clone();
+        let is_xlang = self.is_xlang;
+        let bytes = tokio::task::spawn_blocking(move || crate::runtime::get_raw(&id_for_get))
+            .await
+            .map_err(|e| RayError::Runtime(format!("spawn_blocking join error: {}", e)))??;
+        if is_xlang {
+            crate::serialize::deserialize_xlang_value(&bytes)
+        } else {
+            crate::serialize::deserialize_value(&bytes)
+        }
+    }
+
+    /// Get raw bytes from the object store (for debugging).
+    pub fn get_raw_bytes(&self) -> Result<Vec<u8>, RayError> {
+        crate::runtime::get_raw(&self.id)
     }
 
     /// Cast the phantom type parameter.

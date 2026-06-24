@@ -49,11 +49,19 @@ extern "C" {
         arg_count: usize,
         is_ref: *const bool,
     ) -> RayBytes;
+    pub fn ray_task_call_with_resources(
+        func_name: *const c_char,
+        args: *const RayBytes,
+        arg_count: usize,
+        is_ref: *const bool,
+        resources_json: *const c_char,
+    ) -> RayBytes;
     pub fn ray_task_call_python(
         module_name: *const c_char,
         function_name: *const c_char,
         args: *const RayBytes,
         arg_count: usize,
+        is_ref: *const bool,
     ) -> RayBytes;
 
     // Actor
@@ -61,6 +69,12 @@ extern "C" {
         func_name: *const c_char,
         args: *const RayBytes,
         arg_count: usize,
+    ) -> RayBytes;
+    pub fn ray_actor_create_with_resources(
+        func_name: *const c_char,
+        args: *const RayBytes,
+        arg_count: usize,
+        resources_json: *const c_char,
     ) -> RayBytes;
     pub fn ray_actor_create_python(
         module_name: *const c_char,
@@ -81,6 +95,7 @@ extern "C" {
         method_name: *const c_char,
         args: *const RayBytes,
         arg_count: usize,
+        is_ref: *const bool,
     ) -> RayBytes;
     pub fn ray_actor_kill(actor_id_data: *const c_char, actor_id_len: usize, no_restart: bool);
 
@@ -125,6 +140,10 @@ extern "C" {
     // Memory Management
     pub fn ray_free_bytes(ptr: *mut RayBytes);
     pub fn ray_free_bools(ptr: *mut bool);
+
+    // Error Handling
+    pub fn ray_last_error() -> *const c_char;
+    pub fn ray_clear_error();
 }
 
 // ─── Safe wrapper helpers ─────────────────────────────────────
@@ -167,6 +186,27 @@ impl Drop for CBytesGuard {
 /// Helper to convert a Rust string to CString, handling null.
 pub fn to_cstring(s: &str) -> CString {
     CString::new(s).unwrap_or_else(|_| CString::new("").unwrap())
+}
+
+/// Get the last error message from the C wrapper (thread-local).
+/// Returns None if no error is set.
+pub fn last_error() -> Option<String> {
+    unsafe {
+        let ptr = ray_last_error();
+        if ptr.is_null() {
+            None
+        } else {
+            std::ffi::CStr::from_ptr(ptr)
+                .to_str()
+                .ok()
+                .map(|s| s.to_string())
+        }
+    }
+}
+
+/// Clear the last error message.
+pub fn clear_error() {
+    unsafe { ray_clear_error() }
 }
 
 /// Build a `Vec<RayBytes>` from a slice of byte slices.

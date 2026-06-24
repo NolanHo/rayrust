@@ -55,7 +55,7 @@ async fn main() {
     let arg_b = rayrust::serialize(&3i64).unwrap();
     let args: Vec<&[u8]> = vec![&arg_a, &arg_b];
 
-    match rayrust::task_call_python("rayrust_test", "add", &args) {
+    match rayrust::task_call_python("rayrust_test", "add", &args, &[]) {
         Ok(obj_ref) => {
             println!("Python add(5, 3) task submitted");
             let obj_ref: ObjectRef<i64> = obj_ref.cast();
@@ -78,7 +78,7 @@ async fn main() {
 
             let arg_n = rayrust::serialize(&5i64).unwrap();
             let args_inc: Vec<&[u8]> = vec![&arg_n];
-            match rayrust::actor_call_python(actor.id(), "increment", &args_inc) {
+            match rayrust::actor_call_python(actor.id(), "increment", &args_inc, &[]) {
                 Ok(obj_ref) => {
                     let obj_ref: ObjectRef<i64> = obj_ref.cast();
                     match obj_ref.get_async().await {

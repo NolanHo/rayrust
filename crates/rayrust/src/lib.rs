@@ -8,6 +8,7 @@
 //! - Actors
 //! - Placement groups
 
+pub mod async_runtime;
 pub mod error;
 pub mod object_ref;
 pub mod runtime;
@@ -23,13 +24,20 @@ pub use error::RayError;
 pub use object_ref::ObjectRef;
 pub use runtime::{
     get_namespace, get_actor, cancel, get_many,
-    init, init_with_config, is_initialized, put, put_async, get, get_async, wait,
+    init, init_with_config, is_initialized, put, put_async, put_xlang, get, get_async, wait,
     was_current_actor_restarted, shutdown, ActorHandle, RayConfig,
 };
-pub use serialize::{deserialize, deserialize_xlang, serialize};
+pub use serialize::{deserialize, deserialize_value, deserialize_xlang, deserialize_xlang_value, serialize, serialize_xlang};
+
+/// Re-export block_on_async for the `#[remote]` proc macro.
+pub use async_runtime::block_on_async;
+
+/// Re-export rmpv so users can use `rmpv::Value` for dynamic deserialization
+/// without adding rmpv as their own dependency.
+pub use rmpv;
 
 /// Re-export the proc macro.
-pub use rayrust_macros::remote;
+pub use rayrust_macros::{actor, remote};
 
 /// Register a Rust actor member function with Ray's FunctionManager.
 /// This is used by the `#[rayrust::remote]` macro for actor methods.
@@ -66,6 +74,17 @@ pub fn task_call(func_name: &str, args: &[&[u8]], is_ref: &[bool]) -> Result<Obj
     crate::runtime::task_call_inner(func_name, args, is_ref)
 }
 
+/// Call a remote task with resource requirements.
+/// `resources` is a slice of (name, value) pairs, e.g. `[("CPU", 2.0), ("GPU", 0.5)]`.
+pub fn task_call_with_resources(
+    func_name: &str,
+    args: &[&[u8]],
+    is_ref: &[bool],
+    resources: &[(&str, f64)],
+) -> Result<ObjectRef<()>, RayError> {
+    crate::runtime::task_call_with_resources_inner(func_name, args, is_ref, resources)
+}
+
 /// Asynchronously call a remote task by function name.
 pub async fn task_call_async(func_name: &str, args: Vec<Vec<u8>>, is_ref: Vec<bool>) -> Result<ObjectRef<()>, RayError> {
     crate::runtime::task_call_inner_async(func_name.to_string(), args, is_ref).await
@@ -73,14 +92,32 @@ pub async fn task_call_async(func_name: &str, args: Vec<Vec<u8>>, is_ref: Vec<bo
 
 /// Call a Python remote function.
 /// `module` is the Python module name, `function` is the function name.
-pub fn task_call_python(module: &str, function: &str, args: &[&[u8]]) -> Result<ObjectRef<()>, RayError> {
-    let id = crate::runtime::task_call_python_inner(module, function, args)?;
+/// `args` are msgpack-serialized argument bytes.
+/// `is_ref[i] = true` means args[i] is an ObjectRef ID (pass by reference,
+/// avoiding re-serialization for large data).
+pub fn task_call_python(
+    module: &str,
+    function: &str,
+    args: &[&[u8]],
+    is_ref: &[bool],
+) -> Result<ObjectRef<()>, RayError> {
+    let id = crate::runtime::task_call_python_inner(module, function, args, is_ref)?;
     Ok(ObjectRef::from_id_xlang(id))
 }
 
 /// Create an actor by factory function name.
 pub fn actor_create(func_name: &str, args: &[&[u8]], is_ref: &[bool]) -> Result<ActorHandle, RayError> {
     crate::runtime::actor_create_inner(func_name, args, is_ref)
+}
+
+/// Create an actor with resource requirements.
+/// `resources` is a slice of (name, value) pairs, e.g. `[("CPU", 1.0), ("GPU", 1.0)]`.
+pub fn actor_create_with_resources(
+    func_name: &str,
+    args: &[&[u8]],
+    resources: &[(&str, f64)],
+) -> Result<ActorHandle, RayError> {
+    crate::runtime::actor_create_with_resources_inner(func_name, args, resources)
 }
 
 /// Create a Python actor.
@@ -94,10 +131,25 @@ pub fn actor_call(actor_id: &[u8], func_name: &str, args: &[&[u8]]) -> Result<Ob
     crate::runtime::actor_call_inner(actor_id, func_name, args)
 }
 
+/// Asynchronously call a method on an actor.
+pub async fn actor_call_async(
+    actor_id: &[u8],
+    func_name: &str,
+    args: Vec<Vec<u8>>,
+) -> Result<ObjectRef<()>, RayError> {
+    crate::runtime::actor_call_inner_async(actor_id.to_vec(), func_name.to_string(), args).await
+}
+
 /// Call a method on a Python actor.
 /// `method_name` is the Python method name (without `self`).
-pub fn actor_call_python(actor_id: &[u8], method_name: &str, args: &[&[u8]]) -> Result<ObjectRef<()>, RayError> {
-    let id = crate::runtime::actor_call_python_inner(actor_id, method_name, args)?;
+/// `is_ref[i] = true` means args[i] is an ObjectRef ID (pass by reference).
+pub fn actor_call_python(
+    actor_id: &[u8],
+    method_name: &str,
+    args: &[&[u8]],
+    is_ref: &[bool],
+) -> Result<ObjectRef<()>, RayError> {
+    let id = crate::runtime::actor_call_python_inner(actor_id, method_name, args, is_ref)?;
     Ok(ObjectRef::from_id_xlang(id))
 }
 
@@ -112,14 +164,19 @@ pub mod prelude {
     pub use crate::object_ref::ObjectRef;
     pub use crate::runtime::{
         ActorHandle, RayConfig, init, init_with_config,
-        put, put_async, get, get_async, wait, shutdown,
+        put, put_async, put_xlang, get, get_async, wait, shutdown,
     };
-    pub use crate::serialize::{deserialize, deserialize_xlang, serialize};
+    pub use crate::serialize::{
+        deserialize, deserialize_value, deserialize_xlang, deserialize_xlang_value,
+        serialize, serialize_xlang,
+    };
     pub use crate::{
-        actor_call, actor_create, actor_kill, get_namespace, get_actor, cancel, get_many,
-        task_call, task_call_async, was_current_actor_restarted,
+        actor_call, actor_call_async, actor_create, actor_create_with_resources, actor_kill,
+        get_namespace, get_actor, cancel, get_many,
+        task_call, task_call_with_resources, task_call_async, was_current_actor_restarted,
         task_call_python, actor_create_python, actor_call_python,
         placement_group_create, placement_group_remove,
+        rmpv,
     };
-    pub use rayrust_macros::remote;
+    pub use rayrust_macros::{actor, remote};
 }

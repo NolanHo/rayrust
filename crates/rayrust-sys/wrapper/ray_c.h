@@ -88,13 +88,23 @@ ray_bytes_t ray_task_call(const char *func_name,
                            size_t arg_count,
                            const bool *is_ref);
 
+/// Call a remote task with resource requirements.
+/// `resources_json` is a JSON string like `{"CPU":1,"GPU":0.5}` or NULL.
+ray_bytes_t ray_task_call_with_resources(const char *func_name,
+                                           const ray_bytes_t *args,
+                                           size_t arg_count,
+                                           const bool *is_ref,
+                                           const char *resources_json);
+
 /// Call a Python remote function.
 /// `module_name` and `function_name` are null-terminated C strings.
 /// `args` are msgpack-serialized arguments (will be wrapped with xlang header).
+/// `is_ref[i] = true` means args[i] is an ObjectRef ID (pass by reference).
 ray_bytes_t ray_task_call_python(const char *module_name,
                                   const char *function_name,
                                   const ray_bytes_t *args,
-                                  size_t arg_count);
+                                  size_t arg_count,
+                                  const bool *is_ref);
 
 // ─── Actor ────────────────────────────────────────────────────
 
@@ -103,6 +113,13 @@ ray_bytes_t ray_task_call_python(const char *module_name,
 ray_bytes_t ray_actor_create(const char *func_name,
                               const ray_bytes_t *args,
                               size_t arg_count);
+
+/// Create an actor with resource requirements.
+/// `resources_json` is a JSON string like `{"CPU":1,"GPU":1}` or NULL.
+ray_bytes_t ray_actor_create_with_resources(const char *func_name,
+                                              const ray_bytes_t *args,
+                                              size_t arg_count,
+                                              const char *resources_json);
 
 /// Create a Python actor.
 /// `module_name` is the Python module, `class_name` is the Python class.
@@ -121,10 +138,12 @@ ray_bytes_t ray_actor_call(const char *actor_id_data, size_t actor_id_len,
 
 /// Call a method on a Python actor.
 /// `method_name` is the Python method name (without `self`).
+/// `is_ref[i] = true` means args[i] is an ObjectRef ID (pass by reference).
 ray_bytes_t ray_actor_call_python(const char *actor_id_data, size_t actor_id_len,
                                     const char *method_name,
                                     const ray_bytes_t *args,
-                                    size_t arg_count);
+                                    size_t arg_count,
+                                    const bool *is_ref);
 
 /// Kill an actor.
 /// `actor_id_data`/`actor_id_len` is the binary actor ID.
@@ -237,6 +256,16 @@ void ray_free_bytes(ray_bytes_t *ptr);
 
 /// Free a bool array returned by ray_wait.
 void ray_free_bools(bool *ptr);
+
+// ─── Error Handling ───────────────────────────────────────────
+
+/// Get the last error message (thread-local).
+/// Returns NULL if no error. The returned pointer is valid until the next
+/// ray_* call on the same thread.
+const char *ray_last_error(void);
+
+/// Clear the last error message.
+void ray_clear_error(void);
 
 #ifdef __cplusplus
 }

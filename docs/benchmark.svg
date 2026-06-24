@@ -5,11 +5,8 @@
     .chart-title { font-size: 14px; font-weight: 600; fill: #1f2328; }
     .chart-desc { font-size: 11px; fill: #656d76; }
     .bar-label { font-size: 12px; font-weight: 600; fill: #1f2328; }
-    .bar-value { font-size: 12px; font-weight: 700; fill: #fff; }
+    .bar-value { font-size: 12px; font-weight: 700; fill: #1f2328; }
     .speedup { font-size: 12px; font-weight: 700; fill: #1a7f37; }
-    .rust-bar { fill: url(#rustGrad); }
-    .py-bar { fill: url(#pyGrad); }
-    .gray-bar { fill: url(#grayGrad); }
   </style>
   <defs>
     <linearGradient id="rustGrad" x1="0" y1="0" x2="1" y2="0">
@@ -45,35 +42,35 @@
   <text x="40" y="116" class="chart-desc">500 concurrent remote tasks — higher is better</text>
   <!-- Rust bar -->
   <text x="80" y="138" class="bar-label" text-anchor="end">Rust</text>
-  <rect x="90" y="124" width="640" height="24" rx="4" class="rust-bar"/>
-  <text x="720" y="140" class="bar-value">4,744 tasks/s</text>
+  <rect x="90" y="124" width="640" height="24" rx="4" fill="url(#rustGrad)"/>
+  <text x="735" y="140" class="bar-value">4,744 tasks/s</text>
   <!-- Python bar -->
   <text x="80" y="168" class="bar-label" text-anchor="end">Python</text>
-  <rect x="90" y="154" width="259" height="24" rx="4" class="py-bar"/>
-  <text x="340" y="170" class="bar-value">1,918 tasks/s</text>
+  <rect x="90" y="154" width="259" height="24" rx="4" fill="url(#pyGrad)"/>
+  <text x="355" y="170" class="bar-value">1,918 tasks/s</text>
 
   <!-- Chart 2: Latency (lower is better) -->
   <text x="40" y="210" class="chart-title">Task Latency (median) <tspan class="speedup">1.5x faster</tspan></text>
   <text x="40" y="226" class="chart-desc">Single task round-trip — lower is better</text>
   <!-- Python bar (full width = worst) -->
   <text x="80" y="248" class="bar-label" text-anchor="end">Python</text>
-  <rect x="90" y="234" width="640" height="24" rx="4" class="py-bar"/>
-  <text x="720" y="250" class="bar-value">950µs</text>
+  <rect x="90" y="234" width="640" height="24" rx="4" fill="url(#pyGrad)"/>
+  <text x="735" y="250" class="bar-value">950µs</text>
   <!-- Rust bar (65% of Python) -->
   <text x="80" y="278" class="bar-label" text-anchor="end">Rust</text>
-  <rect x="90" y="264" width="415" height="24" rx="4" class="rust-bar"/>
-  <text x="495" y="280" class="bar-value">617µs</text>
+  <rect x="90" y="264" width="415" height="24" rx="4" fill="url(#rustGrad)"/>
+  <text x="510" y="280" class="bar-value">617µs</text>
 
   <!-- Chart 3: Compute (lower is better, log scale visual) -->
   <text x="40" y="320" class="chart-title">Compute Performance <tspan class="speedup">234x faster</tspan></text>
   <text x="40" y="336" class="chart-desc">sum(0..1,000,000) × 10 tasks — lower is better</text>
   <!-- Python bar (full width) -->
   <text x="80" y="358" class="bar-label" text-anchor="end">Python</text>
-  <rect x="90" y="344" width="640" height="24" rx="4" class="py-bar"/>
-  <text x="720" y="360" class="bar-value">652ms</text>
+  <rect x="90" y="344" width="640" height="24" rx="4" fill="url(#pyGrad)"/>
+  <text x="735" y="360" class="bar-value">652ms</text>
   <!-- Rust bar (0.4% — barely visible, show value outside) -->
   <text x="80" y="388" class="bar-label" text-anchor="end">Rust</text>
-  <rect x="90" y="374" width="3" height="24" rx="2" class="rust-bar"/>
+  <rect x="90" y="374" width="3" height="24" rx="2" fill="url(#rustGrad)"/>
   <text x="100" y="390" class="bar-value" fill="#c45e28">2.8ms</text>
 
   <!-- Chart 4: Parallel Speedup (lower is better) -->
@@ -81,11 +78,11 @@
   <text x="40" y="446" class="chart-desc">100 async tasks × 50ms sleep — actual vs serial expected</text>
   <!-- Serial (full width) -->
   <text x="80" y="468" class="bar-label" text-anchor="end">Serial</text>
-  <rect x="90" y="454" width="640" height="24" rx="4" class="gray-bar"/>
-  <text x="720" y="470" class="bar-value">5,000ms</text>
+  <rect x="90" y="454" width="640" height="24" rx="4" fill="url(#grayGrad)"/>
+  <text x="735" y="470" class="bar-value">5,000ms</text>
   <!-- Actual (10.4%) -->
   <text x="80" y="498" class="bar-label" text-anchor="end">Actual</text>
-  <rect x="90" y="484" width="67" height="24" rx="4" class="rust-bar"/>
+  <rect x="90" y="484" width="67" height="24" rx="4" fill="url(#rustGrad)"/>
   <text x="164" y="500" class="bar-value">521ms</text>
 
   <!-- Footer note -->

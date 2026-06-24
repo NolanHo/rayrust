@@ -250,9 +250,10 @@ Override the Ray version with `RAY_VERSION=2.51.1`.
 
 Rust vs Python on Ray cluster (500 tasks):
 
+![Benchmark](docs/benchmark.svg)
+
 | Metric | Rust | Python | Speedup |
 |---|---|---|---|
-| Sync throughput | 927 tasks/sec | 1089 tasks/sec | 0.85x |
 | Async throughput | 4744 tasks/sec | 1918 tasks/sec | **2.5x** |
 | Latency (median) | 617µs | 950µs | **1.5x** |
 | Compute (sum 0..1M) | 2.8ms | 652ms | **234x** |

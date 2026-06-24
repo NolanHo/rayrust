@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 640" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <style>
+    .title { font-size: 22px; font-weight: 700; fill: #1f2328; }
+    .subtitle { font-size: 13px; fill: #656d76; }
+    .chart-title { font-size: 14px; font-weight: 600; fill: #1f2328; }
+    .chart-desc { font-size: 11px; fill: #656d76; }
+    .bar-label { font-size: 12px; font-weight: 600; fill: #1f2328; }
+    .bar-value { font-size: 12px; font-weight: 700; fill: #fff; }
+    .speedup { font-size: 12px; font-weight: 700; fill: #1a7f37; }
+    .rust-bar { fill: url(#rustGrad); }
+    .py-bar { fill: url(#pyGrad); }
+    .gray-bar { fill: url(#grayGrad); }
+  </style>
+  <defs>
+    <linearGradient id="rustGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#c45e28"/>
+      <stop offset="100%" stop-color="#dea584"/>
+    </linearGradient>
+    <linearGradient id="pyGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1e4d7a"/>
+      <stop offset="100%" stop-color="#3776ab"/>
+    </linearGradient>
+    <linearGradient id="grayGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#555"/>
+      <stop offset="100%" stop-color="#999"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="640" fill="#f6f8fa" rx="12"/>
+
+  <!-- Header -->
+  <text x="40" y="38" class="title">rayrust Benchmark — Rust vs Python on Ray</text>
+  <text x="40" y="56" class="subtitle">500 concurrent tasks on Ray cluster · 2026-06-23</text>
+  <line x1="40" y1="70" x2="860" y2="70" stroke="#d0d7de" stroke-width="1"/>
+
+  <!-- Legend -->
+  <rect x="580" y="30" width="12" height="12" rx="2" fill="#dea584"/>
+  <text x="598" y="40" class="chart-desc" font-weight="600" fill="#1f2328">rayrust</text>
+  <rect x="660" y="30" width="12" height="12" rx="2" fill="#3776ab"/>
+  <text x="678" y="40" class="chart-desc" font-weight="600" fill="#1f2328">Ray Python</text>
+
+  <!-- Chart 1: Async Throughput (higher is better) -->
+  <text x="40" y="100" class="chart-title">Async Throughput <tspan class="speedup">2.5x faster</tspan></text>
+  <text x="40" y="116" class="chart-desc">500 concurrent remote tasks — higher is better</text>
+  <!-- Rust bar -->
+  <text x="80" y="138" class="bar-label" text-anchor="end">Rust</text>
+  <rect x="90" y="124" width="640" height="24" rx="4" class="rust-bar"/>
+  <text x="720" y="140" class="bar-value">4,744 tasks/s</text>
+  <!-- Python bar -->
+  <text x="80" y="168" class="bar-label" text-anchor="end">Python</text>
+  <rect x="90" y="154" width="259" height="24" rx="4" class="py-bar"/>
+  <text x="340" y="170" class="bar-value">1,918 tasks/s</text>
+
+  <!-- Chart 2: Latency (lower is better) -->
+  <text x="40" y="210" class="chart-title">Task Latency (median) <tspan class="speedup">1.5x faster</tspan></text>
+  <text x="40" y="226" class="chart-desc">Single task round-trip — lower is better</text>
+  <!-- Python bar (full width = worst) -->
+  <text x="80" y="248" class="bar-label" text-anchor="end">Python</text>
+  <rect x="90" y="234" width="640" height="24" rx="4" class="py-bar"/>
+  <text x="720" y="250" class="bar-value">950µs</text>
+  <!-- Rust bar (65% of Python) -->
+  <text x="80" y="278" class="bar-label" text-anchor="end">Rust</text>
+  <rect x="90" y="264" width="415" height="24" rx="4" class="rust-bar"/>
+  <text x="495" y="280" class="bar-value">617µs</text>
+
+  <!-- Chart 3: Compute (lower is better, log scale visual) -->
+  <text x="40" y="320" class="chart-title">Compute Performance <tspan class="speedup">234x faster</tspan></text>
+  <text x="40" y="336" class="chart-desc">sum(0..1,000,000) × 10 tasks — lower is better</text>
+  <!-- Python bar (full width) -->
+  <text x="80" y="358" class="bar-label" text-anchor="end">Python</text>
+  <rect x="90" y="344" width="640" height="24" rx="4" class="py-bar"/>
+  <text x="720" y="360" class="bar-value">652ms</text>
+  <!-- Rust bar (0.4% — barely visible, show value outside) -->
+  <text x="80" y="388" class="bar-label" text-anchor="end">Rust</text>
+  <rect x="90" y="374" width="3" height="24" rx="2" class="rust-bar"/>
+  <text x="100" y="390" class="bar-value" fill="#c45e28">2.8ms</text>
+
+  <!-- Chart 4: Parallel Speedup (lower is better) -->
+  <text x="40" y="430" class="chart-title">Persistent Tokio Runtime <tspan class="speedup">9.6x parallel</tspan></text>
+  <text x="40" y="446" class="chart-desc">100 async tasks × 50ms sleep — actual vs serial expected</text>
+  <!-- Serial (full width) -->
+  <text x="80" y="468" class="bar-label" text-anchor="end">Serial</text>
+  <rect x="90" y="454" width="640" height="24" rx="4" class="gray-bar"/>
+  <text x="720" y="470" class="bar-value">5,000ms</text>
+  <!-- Actual (10.4%) -->
+  <text x="80" y="498" class="bar-label" text-anchor="end">Actual</text>
+  <rect x="90" y="484" width="67" height="24" rx="4" class="rust-bar"/>
+  <text x="164" y="500" class="bar-value">521ms</text>
+
+  <!-- Footer note -->
+  <line x1="40" y1="540" x2="860" y2="540" stroke="#d0d7de" stroke-width="1"/>
+  <text x="40" y="560" class="chart-desc">Environment: Ray 2.51.1 cluster (6 nodes) · mint-dev driver (192.168.42.106)</text>
+  <text x="40" y="576" class="chart-desc">Rust 1.87 · rayrust 0.1.0 · Python 3.12 · Ray Python 2.51.1</text>
+  <text x="40" y="600" class="chart-desc" fill="#8b949e">Sync throughput excluded (Rust 927 vs Python 1089 tasks/s — Python faster for simple sync calls)</text>
+</svg>

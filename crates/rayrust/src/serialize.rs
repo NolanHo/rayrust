@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_serialize_xlang_f64() {
-        let val: f64 = 3.141592653589793;
+        let val: f64 = std::f64::consts::PI;
         let xlang = serialize_xlang(&val).unwrap();
         let back: f64 = deserialize_xlang(&xlang).unwrap();
         assert_eq!(val, back);
@@ -481,7 +481,7 @@ mod tests {
             rmpv::Value::String("hello".into()),
             rmpv::Value::Boolean(true),
             rmpv::Value::Nil,
-            rmpv::Value::F32(3.14),
+            rmpv::Value::F32(3.15),
         ]);
         let xlang = serialize_xlang(&mixed).unwrap();
         let val = deserialize_xlang_value(&xlang).unwrap();
@@ -490,7 +490,7 @@ mod tests {
         assert_eq!(arr.len(), 5);
         assert_eq!(arr[0].as_i64().unwrap(), 42);
         assert_eq!(arr[1].as_str().unwrap(), "hello");
-        assert_eq!(arr[2].as_bool().unwrap(), true);
+        assert!(arr[2].as_bool().unwrap());
         assert!(arr[3].is_nil());
     }
 
@@ -515,7 +515,7 @@ mod tests {
     fn test_deserialize_value_bool() {
         let bytes = serialize(&true).unwrap();
         let value = deserialize_value(&bytes).unwrap();
-        assert_eq!(value.as_bool().unwrap(), true);
+        assert!(value.as_bool().unwrap());
     }
 
     // ── False-positive guard: raw msgpack that looks like XLANG ──

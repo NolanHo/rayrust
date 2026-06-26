@@ -5,12 +5,9 @@
 //! Marks a function as a Ray remote task. Generates:
 //! - A C-compatible callback that deserializes args, calls the function, serializes result
 //! - A `register()` function that registers the callback with Ray's FunctionManager
-//! - A `{name}_remote()` sync caller
-//! - A `{name}_remote_async()` async caller (tokio)
+//! - A `{name}_remote()` sync caller (panics on submission failure)
+//! - A `{name}_remote_async()` async caller (returns `Result`)
 //! - A `#[ctor]` auto-registration that runs when the .so is loaded by the Ray worker
-//!
-//! Supports both sync `fn` and `async fn`. For `async fn`, the callback
-//! uses the persistent global tokio runtime to execute the future.
 //!
 //! ## `#[rayrust::actor]`
 //!
@@ -18,8 +15,9 @@
 //! - A factory callback that calls `new()` and returns a raw pointer
 //! - Member function callbacks for each method (excluding `new`)
 //! - `#[ctor]` auto-registration of all callbacks
-//! - `{Type}_actor_create()` function to create instances
-//! - `{Type}_actor_call()` / `{Type}_actor_call_async()` to call methods
+//! - `{Type}_actor_create()` function to create instances (accepts `&ActorOptions`)
+//! - `{Type}_{method}()` async caller to call methods
+//! - `{Type}_{method}_sync()` sync caller to call methods
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
@@ -92,16 +90,13 @@ pub fn remote(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    // For async fn, we need to keep the original function as async, but also
-    // generate a sync wrapper for the callback. The caller functions (_remote, _remote_async)
-    // stay the same — they just submit the task, the execution happens in the callback.
-
     let expanded = quote! {
         // Keep the original function unchanged
         #input_fn
 
         /// C-compatible callback invoked by Ray's FunctionManager.
         #[no_mangle]
+        #[allow(clippy::missing_safety_doc, clippy::not_unsafe_ptr_arg_deref)]
         pub extern "C" fn #callback_fn_name(
             args: *const ::rayrust::sys::RayBytes,
             arg_count: usize,
@@ -134,10 +129,11 @@ pub fn remote(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let layout = ::std::alloc::Layout::array::<u8>(result_bytes.len())
                 .expect("layout alloc failed");
             let ptr = unsafe { ::std::alloc::alloc(layout) };
-            if !ptr.is_null() {
-                unsafe {
-                    ::std::ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, result_bytes.len());
-                }
+            if ptr.is_null() {
+                ::std::alloc::handle_alloc_error(layout);
+            }
+            unsafe {
+                ::std::ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, result_bytes.len());
             }
 
             ::rayrust::sys::RayBytes {
@@ -156,12 +152,16 @@ pub fn remote(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         /// Auto-registration via #[ctor].
         #[::rayrust::ctor::ctor]
+        #[allow(non_snake_case)]
         fn #ctor_name() {
             #register_fn_name();
         }
 
         /// Submit this function as a remote task (sync).
-        pub fn #remote_fn_name(#inputs) -> ::rayrust::ObjectRef<#return_type> {
+        ///
+        /// Panics if serialization or task submission fails.
+        /// Use `{name}_remote_async` for error-safe submission.
+        pub fn #remote_fn_name(ray: &::rayrust::Ray, #inputs) -> ::rayrust::ObjectRef<#return_type> {
             let args_data: Vec<Vec<u8>> = vec![
                 #(
                     ::rayrust::serialize(&#arg_names)
@@ -171,13 +171,16 @@ pub fn remote(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             let args_ref: Vec<&[u8]> = args_data.iter().map(|v| v.as_slice()).collect();
 
-            ::rayrust::task_call(#fn_name_str, &args_ref, &[])
+            ray.task_call(#fn_name_str, &args_ref, &[], &::rayrust::TaskOptions::new())
                 .expect(concat!("ray task call failed: ", #fn_name_str))
                 .cast()
         }
 
         /// Submit this function as a remote task (async).
-        pub async fn #remote_async_fn_name(#inputs) -> ::std::result::Result<::rayrust::ObjectRef<#return_type>, ::rayrust::RayError> {
+        ///
+        /// Returns a `'static` future — `&Ray` is only needed to submit,
+        /// not to poll the result.
+        pub fn #remote_async_fn_name(ray: &::rayrust::Ray, #inputs) -> impl ::std::future::Future<Output = ::std::result::Result<::rayrust::ObjectRef<#return_type>, ::rayrust::RayError>> + Send + 'static {
             let args_data: Vec<Vec<u8>> = vec![
                 #(
                     ::rayrust::serialize(&#arg_names)
@@ -185,8 +188,11 @@ pub fn remote(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 ),*
             ];
 
-            let obj_ref = ::rayrust::task_call_async(#fn_name_str, args_data, Vec::new()).await?;
-            Ok(obj_ref.cast())
+            let fut = ray.task_call_async(#fn_name_str, args_data, Vec::new(), &::rayrust::TaskOptions::new());
+            async move {
+                let obj_ref = fut.await?;
+                Ok(obj_ref.cast())
+            }
         }
     };
 
@@ -227,7 +233,8 @@ pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let ctor_ident = format_ident!("__RAYRUST_CTOR_ACTOR_{}", type_name_upper(&type_name));
 
     // Find `new` constructor and collect methods
-    let mut methods: Vec<(syn::Ident, Vec<(syn::Pat, syn::Type)>, Type)> = Vec::new();
+    type MethodInfo = (syn::Ident, Vec<(syn::Pat, syn::Type)>, Type);
+    let mut methods: Vec<MethodInfo> = Vec::new();
     let mut new_args: Vec<(syn::Pat, syn::Type)> = Vec::new();
     let mut has_new = false;
 
@@ -321,6 +328,7 @@ pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             quote! {
                 #[no_mangle]
+                #[allow(clippy::missing_safety_doc, clippy::not_unsafe_ptr_arg_deref)]
                 pub extern "C" fn #cb_ident(
                     actor_ptr: u64,
                     args: *const ::rayrust::sys::RayBytes,
@@ -354,10 +362,11 @@ pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     let layout = ::std::alloc::Layout::array::<u8>(result_bytes.len())
                         .expect("layout alloc failed");
                     let ptr = unsafe { ::std::alloc::alloc(layout) };
-                    if !ptr.is_null() {
-                        unsafe {
-                            ::std::ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, result_bytes.len());
-                        }
+                    if ptr.is_null() {
+                        ::std::alloc::handle_alloc_error(layout);
+                    }
+                    unsafe {
+                        ::std::ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, result_bytes.len());
                     }
 
                     ::rayrust::sys::RayBytes {
@@ -392,22 +401,48 @@ pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let method_callers: Vec<_> = methods.iter()
         .map(|(method_ident, m_args, ret_type)| {
             let caller_name = format_ident!("{}_{}", type_name_lower, method_ident);
+            let caller_sync_name = format_ident!("{}_{}_sync", type_name_lower, method_ident);
             let m_inputs: Vec<_> = m_args.iter().map(|(p, t)| quote! { #p: #t }).collect();
             let m_arg_names: Vec<_> = m_args.iter().map(|(p, _)| quote! { #p }).collect();
             let method_full_name = format!("{}::{}", factory_str, method_ident);
 
             quote! {
-                pub async fn #caller_name(
+                /// Async actor method caller.
+                /// Returns a `'static` future — `&Ray` is only needed to submit,
+                /// not to poll the result.
+                pub fn #caller_name(
+                    ray: &::rayrust::Ray,
                     handle: &::rayrust::ActorHandle,
                     #(#m_inputs),*
-                ) -> ::std::result::Result<::rayrust::ObjectRef<#ret_type>, ::rayrust::RayError> {
+                ) -> impl ::std::future::Future<Output = ::std::result::Result<::rayrust::ObjectRef<#ret_type>, ::rayrust::RayError>> + Send + 'static {
                     let args_data: Vec<Vec<u8>> = vec![
                         #( ::rayrust::serialize(&#m_arg_names)
                             .expect("failed to serialize method arg") ),*
                     ];
                     let func_name = #method_full_name.to_string();
-                    let obj_ref = ::rayrust::actor_call_async(handle.id(), &func_name, args_data).await?;
-                    Ok(obj_ref.cast())
+                    let fut = ray.actor_call_async(handle.id(), &func_name, args_data);
+                    async move {
+                        let obj_ref = fut.await?;
+                        Ok(obj_ref.cast())
+                    }
+                }
+
+                /// Sync actor method caller.
+                /// Panics if serialization or submission fails.
+                pub fn #caller_sync_name(
+                    ray: &::rayrust::Ray,
+                    handle: &::rayrust::ActorHandle,
+                    #(#m_inputs),*
+                ) -> ::rayrust::ObjectRef<#ret_type> {
+                    let args_data: Vec<Vec<u8>> = vec![
+                        #( ::rayrust::serialize(&#m_arg_names)
+                            .expect("failed to serialize method arg") ),*
+                    ];
+                    let args_ref: Vec<&[u8]> = args_data.iter().map(|v| v.as_slice()).collect();
+                    let func_name = #method_full_name.to_string();
+                    ray.actor_call(handle.id(), &func_name, &args_ref)
+                        .expect("actor method call failed")
+                        .cast()
                 }
             }
         })
@@ -419,6 +454,7 @@ pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         // Factory callback
         #[no_mangle]
+        #[allow(clippy::missing_safety_doc, clippy::not_unsafe_ptr_arg_deref)]
         pub extern "C" fn #factory_ident(
             args: *const ::rayrust::sys::RayBytes,
             arg_count: usize,
@@ -454,10 +490,11 @@ pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let layout = ::std::alloc::Layout::array::<u8>(result_bytes.len())
                 .expect("layout alloc failed");
             let ptr = unsafe { ::std::alloc::alloc(layout) };
-            if !ptr.is_null() {
-                unsafe {
-                    ::std::ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, result_bytes.len());
-                }
+            if ptr.is_null() {
+                ::std::alloc::handle_alloc_error(layout);
+            }
+            unsafe {
+                ::std::ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, result_bytes.len());
             }
 
             ::rayrust::sys::RayBytes {
@@ -482,18 +519,23 @@ pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         // Auto-registration via #[ctor]
         #[::rayrust::ctor::ctor]
+        #[allow(non_snake_case)]
         fn #ctor_ident() {
             #register_ident();
         }
 
-        // Caller: create actor
-        pub fn #create_fn(#(#create_inputs),*) -> ::std::result::Result<::rayrust::ActorHandle, ::rayrust::RayError> {
+        // Caller: create actor (accepts ActorOptions for full control)
+        pub fn #create_fn(
+            ray: &::rayrust::Ray,
+            opts: &::rayrust::ActorOptions,
+            #(#create_inputs),*
+        ) -> ::std::result::Result<::rayrust::ActorHandle, ::rayrust::RayError> {
             let args_data: Vec<Vec<u8>> = vec![
                 #( ::rayrust::serialize(&#create_arg_names)
                     .expect("failed to serialize constructor arg") ),*
             ];
             let args_ref: Vec<&[u8]> = args_data.iter().map(|v| v.as_slice()).collect();
-            ::rayrust::actor_create(#factory_str, &args_ref, &[])
+            ray.actor_create(#factory_str, &args_ref, opts)
         }
 
         // Caller: call methods

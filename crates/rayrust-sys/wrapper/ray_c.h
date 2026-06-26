@@ -37,11 +37,17 @@ typedef struct {
 /// `runtime_env_json` is a JSON string for runtime_env (e.g. {"pip": ["pkg"]}).
 ///   Pass NULL to skip.
 /// `log_dir` is the directory for Ray logs. Pass NULL for default.
+/// `actor_lifetime` is 0 = NON_DETACHED (default), 1 = DETACHED.
+///   Detached actors outlive the job that created them.
+/// `namespace` is the job-level namespace for named actors.
+///   Pass NULL or empty string for default (no namespace).
 /// Returns 0 on success, -1 on failure.
 int ray_init(const char *address, int local_mode, const char *node_ip,
              const char *code_search_path,
              const char *runtime_env_json,
-             const char *log_dir);
+             const char *log_dir,
+             int actor_lifetime,
+             const char *ns);
 
 /// Returns true if ray::Init has been called.
 bool ray_is_initialized(void);
@@ -108,25 +114,31 @@ ray_bytes_t ray_task_call_python(const char *module_name,
 
 // ─── Actor ────────────────────────────────────────────────────
 
-/// Create an actor by calling a factory function.
-/// Returns a ray_bytes_t containing the binary actor ID.
-ray_bytes_t ray_actor_create(const char *func_name,
-                              const ray_bytes_t *args,
-                              size_t arg_count);
+/// Create an actor with full ActorCreationOptions.
+/// `options_json` is a JSON string with any subset of fields:
+///   {
+///     "name": "my_actor",              // named actor
+///     "ray_namespace": "my_ns",        // namespace for named actor lookup
+///     "resources": {"CPU":1,"GPU":1},  // resource requirements
+///     "max_restarts": 3,               // restart on failure (default 0)
+///     "max_concurrency": 10,           // max concurrent method calls (default 1)
+///     "serialized_runtime_env_info": "...",  // runtime env info string
+///     "placement_group_id": "a1b2c3...", // hex-encoded binary placement group ID
+///     "bundle_index": 0                // bundle index within the placement group
+///   }
+/// Pass NULL or empty string for no options (all defaults).
+ray_bytes_t ray_actor_create_with_options(const char *func_name,
+                                            const ray_bytes_t *args,
+                                            size_t arg_count,
+                                            const char *options_json);
 
-/// Create an actor with resource requirements.
-/// `resources_json` is a JSON string like `{"CPU":1,"GPU":1}` or NULL.
-ray_bytes_t ray_actor_create_with_resources(const char *func_name,
-                                              const ray_bytes_t *args,
-                                              size_t arg_count,
-                                              const char *resources_json);
-
-/// Create a Python actor.
-/// `module_name` is the Python module, `class_name` is the Python class.
-ray_bytes_t ray_actor_create_python(const char *module_name,
-                                      const char *class_name,
-                                      const ray_bytes_t *args,
-                                      size_t arg_count);
+/// Create a Python actor with full ActorCreationOptions.
+/// `options_json` has the same format as ray_actor_create_with_options.
+ray_bytes_t ray_actor_create_python_with_options(const char *module_name,
+                                                   const char *class_name,
+                                                   const ray_bytes_t *args,
+                                                   size_t arg_count,
+                                                   const char *options_json);
 
 /// Call a method on an actor.
 /// `actor_id_data`/`actor_id_len` is the binary actor ID.

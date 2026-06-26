@@ -51,14 +51,14 @@ async fn main() {
     let config = RayConfig::new(&address)
         .node_ip(&node_ip)
         .code_search_path(vec![worker_so.clone()]);
-    rayrust::init_with_config(&config).expect("init failed");
+    let ray = Ray::connect(&config).expect("init failed");
     println!("✓ Ray initialized\n");
 
     let warmup_arg_a = rayrust::serialize(&1i64).unwrap();
     let warmup_arg_b = rayrust::serialize(&1i64).unwrap();
     let warmup_args: Vec<&[u8]> = vec![&warmup_arg_a, &warmup_arg_b];
-    let _ = rayrust::task_call_python("rayrust_test", "add", &warmup_args, &[]);
-    let _ = add_remote(1, 1);
+    let _ = ray.task_call_python("rayrust_test", "add", &warmup_args, &[]);
+    let _ = add_remote(&ray, 1, 1);
     println!("✓ Warmup done\n");
 
     // ── 1. Rust → Rust: Sync throughput (sequential) ────────────
@@ -67,7 +67,7 @@ async fn main() {
     let t0 = Instant::now();
     let mut sum = 0i64;
     for i in 0..n {
-        let r = add_remote(i, 1);
+        let r = add_remote(&ray, i, 1);
         let v: i32 = r.get().expect("get failed");
         sum += v as i64;
     }
@@ -82,7 +82,7 @@ async fn main() {
     let t0 = Instant::now();
     let mut futs = Vec::new();
     for i in 0..n {
-        futs.push(add_remote_async(i, 1));
+        futs.push(add_remote_async(&ray, i, 1));
     }
     let mut refs = Vec::new();
     for f in futs {
@@ -111,7 +111,7 @@ async fn main() {
         let arg_a = rayrust::serialize(&(i as i64)).unwrap();
         let arg_b = rayrust::serialize(&1i64).unwrap();
         let args: Vec<&[u8]> = vec![&arg_a, &arg_b];
-        let r = rayrust::task_call_python("rayrust_test", "add", &args, &[])
+        let r = ray.task_call_python("rayrust_test", "add", &args, &[])
             .expect("python task failed");
         refs.push(r);
     }
@@ -134,7 +134,7 @@ async fn main() {
     let mut times_rust_sync = Vec::new();
     for _ in 0..100 {
         let t0 = Instant::now();
-        let r = add_remote(1, 2);
+        let r = add_remote(&ray, 1, 2);
         let _v: i32 = r.get().unwrap();
         times_rust_sync.push(t0.elapsed());
     }
@@ -143,7 +143,7 @@ async fn main() {
     let mut times_rust_async = Vec::new();
     for _ in 0..100 {
         let t0 = Instant::now();
-        let r = add_remote_async(1, 2).await.unwrap();
+        let r = add_remote_async(&ray, 1, 2).await.unwrap();
         let _v: i32 = r.get_async().await.unwrap();
         times_rust_async.push(t0.elapsed());
     }
@@ -155,7 +155,7 @@ async fn main() {
         let arg_a = rayrust::serialize(&1i64).unwrap();
         let arg_b = rayrust::serialize(&2i64).unwrap();
         let args: Vec<&[u8]> = vec![&arg_a, &arg_b];
-        let r = rayrust::task_call_python("rayrust_test", "add", &args, &[]).unwrap();
+        let r = ray.task_call_python("rayrust_test", "add", &args, &[]).unwrap();
         let _v: i64 = r.cast().get_async().await.unwrap();
         times_python.push(t0.elapsed());
     }
@@ -174,7 +174,7 @@ async fn main() {
     let t0 = Instant::now();
     let mut futs = Vec::new();
     for i in 0..n {
-        futs.push(async_sum_remote_async(i, 0));
+        futs.push(async_sum_remote_async(&ray, i, 0));
     }
     let mut refs = Vec::new();
     for f in futs {
@@ -200,7 +200,7 @@ async fn main() {
     let t0 = Instant::now();
     let mut futs = Vec::new();
     for _ in 0..n_tasks {
-        futs.push(compute_remote_async(n_compute));
+        futs.push(compute_remote_async(&ray, n_compute));
     }
     let mut refs = Vec::new();
     for f in futs {
@@ -219,7 +219,7 @@ async fn main() {
     for _ in 0..n_tasks {
         let arg = rayrust::serialize(&n_compute).unwrap();
         let args: Vec<&[u8]> = vec![&arg];
-        let r = rayrust::task_call_python("rayrust_test", "compute", &args, &[])
+        let r = ray.task_call_python("rayrust_test", "compute", &args, &[])
             .expect("python task failed");
         refs.push(r);
     }
@@ -250,7 +250,7 @@ async fn main() {
     // 7b. Rust put only (serialize + object store)
     let t0 = Instant::now();
     for _ in 0..n_iter {
-        let _obj = rayrust::put(&big_list);
+        let _obj = ray.put(&big_list).unwrap();
     }
     let put_elapsed = t0.elapsed();
 
@@ -259,7 +259,7 @@ async fn main() {
     for _ in 0..n_iter {
         let arg = rayrust::serialize(&big_list).unwrap();
         let args: Vec<&[u8]> = vec![&arg];
-        let r = rayrust::task_call_python("rayrust_test", "echo_list", &args, &[]).unwrap();
+        let r = ray.task_call_python("rayrust_test", "echo_list", &args, &[]).unwrap();
         let _v = r.get_value_async().await.unwrap();
     }
     let full_xlang = t0.elapsed();
@@ -292,5 +292,5 @@ async fn main() {
     println!("║ Serialization share: {}% of xlang round-trip            ║", ser_pct);
     println!("╚══════════════════════════════════════════════════════════╝");
 
-    rayrust::shutdown();
+    drop(ray);
 }

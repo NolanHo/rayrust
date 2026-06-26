@@ -28,6 +28,8 @@ extern "C" {
         code_search_path: *const c_char,
         runtime_env_json: *const c_char,
         log_dir: *const c_char,
+        actor_lifetime: c_int,
+        namespace: *const c_char,
     ) -> c_int;
     pub fn ray_is_initialized() -> bool;
     pub fn ray_shutdown();
@@ -65,22 +67,18 @@ extern "C" {
     ) -> RayBytes;
 
     // Actor
-    pub fn ray_actor_create(
+    pub fn ray_actor_create_with_options(
         func_name: *const c_char,
         args: *const RayBytes,
         arg_count: usize,
+        options_json: *const c_char,
     ) -> RayBytes;
-    pub fn ray_actor_create_with_resources(
-        func_name: *const c_char,
-        args: *const RayBytes,
-        arg_count: usize,
-        resources_json: *const c_char,
-    ) -> RayBytes;
-    pub fn ray_actor_create_python(
+    pub fn ray_actor_create_python_with_options(
         module_name: *const c_char,
         class_name: *const c_char,
         args: *const RayBytes,
         arg_count: usize,
+        options_json: *const c_char,
     ) -> RayBytes;
     pub fn ray_actor_call(
         actor_id_data: *const c_char,
@@ -165,15 +163,6 @@ impl CBytesGuard {
 
     pub fn as_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.inner.data as *const u8, self.inner.len) }
-    }
-
-    pub fn into_vec(self) -> Vec<u8> {
-        let v = self.as_slice().to_vec();
-        // Don't run Drop's free — we moved the data.
-        // Actually std::mem::forget is needed if we move out, but
-        // since we already copied the data into a Vec, just let Drop free it.
-        // Drop will free the original C buffer, which is fine.
-        v
     }
 }
 

@@ -4,11 +4,6 @@
 //! - Python → Rust: Python functions return list/dict/nested/None/mixed,
 //!   Rust deserializes into typed structs or rmpv::Value.
 //! - Rust → Python: Rust sends complex args (Vec, HashMap), Python processes them.
-//!
-//! Usage:
-//!   RAY_ADDRESS=192.168.42.141:6379 RAY_NODE_IP=192.168.42.106 \
-//!   RAY_WORKER_SO=target/release/librayrust_example_worker.so \
-//!   cargo run --example xlang_complex
 
 use rayrust::prelude::*;
 use std::collections::HashMap;
@@ -61,7 +56,7 @@ async fn main() {
     } else {
         config = config.runtime_env(r#"{"env_vars": {"PYTHONPATH": "/tmp"}}"#);
     }
-    rayrust::init_with_config(&config).expect("init failed");
+    let ray = Ray::connect(&config).expect("init failed");
     println!("✓ Ray initialized\n");
 
     // ── 0. Basic Python sanity check (add) ────────────────────
@@ -69,9 +64,8 @@ async fn main() {
     let arg_a = rayrust::serialize(&5i64).unwrap();
     let arg_b = rayrust::serialize(&3i64).unwrap();
     let args_add: Vec<&[u8]> = vec![&arg_a, &arg_b];
-    match rayrust::task_call_python("rayrust_test", "add", &args_add, &[]) {
+    match ray.task_call_python("rayrust_test", "add", &args_add, &[]) {
         Ok(obj_ref) => {
-            // Debug: print raw bytes
             let raw = obj_ref.get_raw_bytes().expect("raw get failed");
             println!("  Debug raw bytes ({}): {:02x?}", raw.len(), raw);
             let val: i64 = obj_ref.cast().get_async().await.expect("add failed");
@@ -82,16 +76,14 @@ async fn main() {
 
     // ── 1. Python returns list → Rust Vec<i64> ──────────────────
     println!("--- 1. Python returns list → Vec<i64> ---");
-    match rayrust::task_call_python("rayrust_test", "return_list", &[], &[]) {
+    match ray.task_call_python("rayrust_test", "return_list", &[], &[]) {
         Ok(obj_ref) => {
-            // Debug: first get as raw Value to see what Python actually returns
             let raw_val = obj_ref.get_value_async().await;
             println!("  Debug raw value: {:?}", raw_val);
             match raw_val {
                 Ok(v) => println!("  Value type: {:?}", v),
                 Err(e) => println!("  get_value error: {}", e),
             }
-            // Now try typed deserialization
             let val: Result<Vec<i64>, _> = obj_ref.cast().get_async().await;
             match val {
                 Ok(v) => {
@@ -106,7 +98,7 @@ async fn main() {
 
     // ── 2. Python returns dict → Rust HashMap<String, i64> ───────
     println!("\n--- 2. Python returns dict → HashMap<String, i64> ---");
-    match rayrust::task_call_python("rayrust_test", "return_dict", &[], &[]) {
+    match ray.task_call_python("rayrust_test", "return_dict", &[], &[]) {
         Ok(obj_ref) => {
             let val: HashMap<String, i64> = obj_ref.cast().get_async().await
                 .expect("return_dict failed");
@@ -120,14 +112,12 @@ async fn main() {
 
     // ── 3. Python returns nested → rmpv::Value (dynamic) ────────
     println!("\n--- 3. Python returns nested → rmpv::Value ---");
-    match rayrust::task_call_python("rayrust_test", "return_nested", &[], &[]) {
+    match ray.task_call_python("rayrust_test", "return_nested", &[], &[]) {
         Ok(obj_ref) => {
             let val = obj_ref.get_value_async().await.expect("return_nested failed");
-            // Should be an array of 2 maps
             assert!(val.is_array());
             let arr = val.as_array().unwrap();
             assert_eq!(arr.len(), 2);
-            // First element: {"name": "alice", "age": 30, "scores": [90, 85, 92]}
             let first = &arr[0];
             assert!(first.is_map());
             let name = vget(first, "name").unwrap();
@@ -146,7 +136,7 @@ async fn main() {
 
     // ── 4. Python returns None → Option<i64> ─────────────────────
     println!("\n--- 4. Python returns None → Option<i64> ---");
-    match rayrust::task_call_python("rayrust_test", "return_none", &[], &[]) {
+    match ray.task_call_python("rayrust_test", "return_none", &[], &[]) {
         Ok(obj_ref) => {
             let val: Option<i64> = obj_ref.cast().get_async().await
                 .expect("return_none failed");
@@ -158,7 +148,7 @@ async fn main() {
 
     // ── 5. Python returns mixed → rmpv::Value ───────────────────
     println!("\n--- 5. Python returns mixed → rmpv::Value ---");
-    match rayrust::task_call_python("rayrust_test", "return_mixed", &[], &[]) {
+    match ray.task_call_python("rayrust_test", "return_mixed", &[], &[]) {
         Ok(obj_ref) => {
             let val = obj_ref.get_value_async().await.expect("return_mixed failed");
             assert!(val.is_array());
@@ -166,9 +156,9 @@ async fn main() {
             assert_eq!(arr.len(), 5);
             assert_eq!(arr[0].as_i64().unwrap(), 42);       // int
             assert_eq!(arr[1].as_str().unwrap(), "hello");  // str
-            assert_eq!(arr[2].as_bool().unwrap(), true);    // bool
+            assert!(arr[2].as_bool().unwrap());    // bool
             assert!(arr[3].is_nil());                        // None
-            assert!((arr[4].as_f64().unwrap() - 3.14).abs() < 1e-9); // float
+            assert!((arr[4].as_f64().unwrap() - 3.15).abs() < 1e-9); // float
             println!("return_mixed() = [42, \"hello\", true, None, 3.14] ✓");
         }
         Err(e) => println!("return_mixed failed: {}", e),
@@ -176,7 +166,7 @@ async fn main() {
 
     // ── 6. Python returns string list → Vec<String> ──────────────
     println!("\n--- 6. Python returns string list → Vec<String> ---");
-    match rayrust::task_call_python("rayrust_test", "return_string_list", &[], &[]) {
+    match ray.task_call_python("rayrust_test", "return_string_list", &[], &[]) {
         Ok(obj_ref) => {
             let val: Vec<String> = obj_ref.cast().get_async().await
                 .expect("return_string_list failed");
@@ -191,7 +181,7 @@ async fn main() {
     let input_list = vec![10i64, 20, 30, 40, 50];
     let arg = rayrust::serialize(&input_list).unwrap();
     let args: Vec<&[u8]> = vec![&arg];
-    match rayrust::task_call_python("rayrust_test", "echo_list", &args, &[]) {
+    match ray.task_call_python("rayrust_test", "echo_list", &args, &[]) {
         Ok(obj_ref) => {
             let val: Vec<i64> = obj_ref.cast().get_async().await.expect("echo_list failed");
             assert_eq!(val, input_list);
@@ -207,7 +197,7 @@ async fn main() {
     input_dict.insert("y".to_string(), 200);
     let arg = rayrust::serialize(&input_dict).unwrap();
     let args: Vec<&[u8]> = vec![&arg];
-    match rayrust::task_call_python("rayrust_test", "echo_dict", &args, &[]) {
+    match ray.task_call_python("rayrust_test", "echo_dict", &args, &[]) {
         Ok(obj_ref) => {
             let val: HashMap<String, i64> = obj_ref.cast().get_async().await
                 .expect("echo_dict failed");
@@ -223,7 +213,7 @@ async fn main() {
     let numbers = vec![1i64, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let arg = rayrust::serialize(&numbers).unwrap();
     let args: Vec<&[u8]> = vec![&arg];
-    match rayrust::task_call_python("rayrust_test", "sum_list", &args, &[]) {
+    match ray.task_call_python("rayrust_test", "sum_list", &args, &[]) {
         Ok(obj_ref) => {
             let val: i64 = obj_ref.cast().get_async().await.expect("sum_list failed");
             assert_eq!(val, 55);
@@ -234,8 +224,6 @@ async fn main() {
 
     // ── 10. Rust → Python: send nested dict, Python processes ───
     println!("\n--- 10. Rust → Python: process_nested ---");
-    // Build: {"items": [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]}
-    // Using rmpv::Value to construct dynamic msgpack data
     let input = rmpv::Value::Map(vec![
         (rmpv::Value::String("items".into()), rmpv::Value::Array(vec![
             rmpv::Value::Map(vec![
@@ -248,10 +236,9 @@ async fn main() {
             ]),
         ])),
     ]);
-    // Serialize rmpv::Value to msgpack bytes
     let arg = rayrust::serialize(&input).unwrap();
     let args: Vec<&[u8]> = vec![&arg];
-    match rayrust::task_call_python("rayrust_test", "process_nested", &args, &[]) {
+    match ray.task_call_python("rayrust_test", "process_nested", &args, &[]) {
         Ok(obj_ref) => {
             let val = obj_ref.get_value_async().await.expect("process_nested failed");
             assert!(val.is_map());
@@ -270,12 +257,11 @@ async fn main() {
     println!("\n--- 11. Python actor: get_stats (complex return) ---");
     let arg_start = rayrust::serialize(&42i64).unwrap();
     let args_actor: Vec<&[u8]> = vec![&arg_start];
-    match rayrust::actor_create_python("rayrust_test", "Counter", &args_actor) {
+    match ray.actor_create_python("rayrust_test", "Counter", &args_actor, &ActorOptions::new()) {
         Ok(actor) => {
-            // increment(8) → 50
             let arg_n = rayrust::serialize(&8i64).unwrap();
             let args_inc: Vec<&[u8]> = vec![&arg_n];
-            match rayrust::actor_call_python(actor.id(), "increment", &args_inc, &[]) {
+            match ray.actor_call_python(actor.id(), "increment", &args_inc, &[]) {
                 Ok(obj_ref) => {
                     let val: i64 = obj_ref.cast().get_async().await.expect("increment failed");
                     assert_eq!(val, 50);
@@ -284,15 +270,14 @@ async fn main() {
                 Err(e) => println!("increment failed: {}", e),
             }
 
-            // get_stats() → {"value": 50, "is_positive": true, "history": [48, 49, 50]}
-            match rayrust::actor_call_python(actor.id(), "get_stats", &[], &[]) {
+            match ray.actor_call_python(actor.id(), "get_stats", &[], &[]) {
                 Ok(obj_ref) => {
                     let val = obj_ref.get_value_async().await.expect("get_stats failed");
                     assert!(val.is_map());
                     let value = vget(&val, "value").unwrap();
                     assert_eq!(value.as_i64().unwrap(), 50);
                     let is_pos = vget(&val, "is_positive").unwrap();
-                    assert_eq!(is_pos.as_bool().unwrap(), true);
+                    assert!(is_pos.as_bool().unwrap());
                     let history = vget(&val, "history").unwrap();
                     assert!(history.is_array());
                     assert_eq!(history.as_array().unwrap().len(), 3);
@@ -301,14 +286,14 @@ async fn main() {
                 Err(e) => println!("get_stats failed: {}", e),
             }
 
-            actor.kill(true);
+            let _ = ray.kill_actor(&actor, true);
             println!("Counter killed ✓");
         }
         Err(e) => println!("Python actor_create failed: {}", e),
     }
 
-    // ── Shutdown ──────────────────────────────────────────────────
+    // ── Shutdown (automatic on drop) ──────────────────────────
     println!("\n--- All tests passed ✓ ---");
-    rayrust::shutdown();
+    drop(ray);
     println!("✓ Ray shutdown");
 }

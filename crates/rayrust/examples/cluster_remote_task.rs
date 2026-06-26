@@ -2,20 +2,6 @@
 //!
 //! This driver connects to a Ray cluster and submits tasks that execute
 //! in the Rust cdylib worker (.so).
-//!
-//! Prerequisites:
-//! 1. Build the worker: `cargo build --release -p rayrust-example-worker`
-//! 2. The resulting .so must be accessible from the worker node.
-//!    Set RAY_WORKER_SO to the absolute path of librayrust_worker.so.
-//!
-//! Run:
-//! ```bash
-//! RAY_CPP_DIR=/path/to/ray/cpp \
-//! RAY_ADDRESS=192.168.42.141:6379 \
-//! RAY_NODE_IP=192.168.42.106 \
-//! RAY_WORKER_SO=/root/code/rayrust/target/release/librayrust_worker.so \
-//! cargo run --example cluster_remote_task
-//! ```
 
 use rayrust::prelude::*;
 
@@ -37,30 +23,31 @@ fn main() {
     println!("Node IP: {}", node_ip);
     println!("Worker .so: {}", worker_so);
 
-    // Connect to cluster with code_search_path pointing to the worker .so
     let config = RayConfig::new(&address)
         .node_ip(&node_ip)
         .code_search_path(vec![worker_so.clone()]);
 
     println!("\nConnecting to Ray cluster...");
-    match rayrust::init_with_config(&config) {
-        Ok(()) => println!("✓ Ray initialized (cluster mode)"),
+    let ray = match Ray::connect(&config) {
+        Ok(ray) => {
+            println!("✓ Ray initialized (cluster mode)");
+            ray
+        }
         Err(e) => {
             eprintln!("✗ Failed to init Ray: {}", e);
             std::process::exit(1);
         }
-    }
+    };
 
     // ── Put / Get ──────────────────────────────────────────
     println!("\n--- Put / Get ---");
-    let obj = rayrust::put(&42i32);
-    match rayrust::get(&obj) {
+    let obj = ray.put(&42i32).unwrap();
+    match obj.get() {
         Ok(val) => println!("Put/Get i32 → {} ✓", val),
         Err(e) => println!("Put/Get i32 failed: {}", e),
     }
 
     // ── Remote Task (cluster mode) ─────────────────────────
-    // These function names must match the ones in the cdylib worker.
     println!("\n--- Remote Task (cluster mode) ---");
 
     // add(10, 32)
@@ -68,7 +55,7 @@ fn main() {
     let arg2 = rayrust::serialize(&32i32).unwrap();
     let args: Vec<&[u8]> = vec![&arg1, &arg2];
 
-    match rayrust::task_call("add", &args, &[]) {
+    match ray.task_call("add", &args, &[], &TaskOptions::new()) {
         Ok(obj_ref) => {
             println!("Task 'add(10, 32)' submitted");
             let obj_ref: ObjectRef<i32> = obj_ref.cast();
@@ -84,7 +71,7 @@ fn main() {
     let arg_name = rayrust::serialize(&"Ray Cluster".to_string()).unwrap();
     let args_greet: Vec<&[u8]> = vec![&arg_name];
 
-    match rayrust::task_call("greet", &args_greet, &[]) {
+    match ray.task_call("greet", &args_greet, &[], &TaskOptions::new()) {
         Ok(obj_ref) => {
             println!("Task 'greet(\"Ray Cluster\")' submitted");
             let obj_ref: ObjectRef<String> = obj_ref.cast();
@@ -101,7 +88,7 @@ fn main() {
     let arg_b = rayrust::serialize(&6i64).unwrap();
     let args_mul: Vec<&[u8]> = vec![&arg_a, &arg_b];
 
-    match rayrust::task_call("multiply", &args_mul, &[]) {
+    match ray.task_call("multiply", &args_mul, &[], &TaskOptions::new()) {
         Ok(obj_ref) => {
             println!("Task 'multiply(7, 6)' submitted");
             let obj_ref: ObjectRef<i64> = obj_ref.cast();
@@ -113,8 +100,8 @@ fn main() {
         Err(e) => println!("Task call failed: {}", e),
     }
 
-    // ── Shutdown ──────────────────────────────────────────
+    // ── Shutdown (automatic on drop) ──────────────────────
     println!("\n--- Shutdown ---");
-    rayrust::shutdown();
+    drop(ray);
     println!("✓ Ray shutdown");
 }

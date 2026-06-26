@@ -1,12 +1,4 @@
 //! Example: Ray remote task + PlacementGroup in cluster mode.
-//!
-//! Run:
-//! ```bash
-//! RAY_CPP_DIR=/path/to/ray/cpp \
-//! RAY_ADDRESS=192.168.42.141:6379 \
-//! RAY_NODE_IP=192.168.42.106 \
-//! cargo run --example cluster_test
-//! ```
 
 use rayrust::prelude::*;
 
@@ -34,38 +26,41 @@ fn main() {
 
     println!("\nConnecting to Ray cluster at {} (node_ip={}) ...", address, node_ip);
     let config = RayConfig::new(&address).node_ip(&node_ip);
-    match rayrust::init_with_config(&config) {
-        Ok(()) => println!("✓ Ray initialized (cluster mode)"),
+    let ray = match Ray::connect(&config) {
+        Ok(ray) => {
+            println!("✓ Ray initialized (cluster mode)");
+            ray
+        }
         Err(e) => {
             eprintln!("✗ Failed to init Ray: {}", e);
             std::process::exit(1);
         }
-    }
+    };
 
     // ── Put / Get ──────────────────────────────────────────
     println!("\n--- Put / Get ---");
-    let obj = rayrust::put(&42i32);
-    match rayrust::get(&obj) {
+    let obj = ray.put(&42i32).unwrap();
+    match obj.get() {
         Ok(val) => println!("Put/Get i32 → {} ✓", val),
         Err(e) => println!("Put/Get i32 failed: {}", e),
     }
 
-    let obj2 = rayrust::put(&"hello from cluster!".to_string());
-    match rayrust::get(&obj2) {
+    let obj2 = ray.put(&"hello from cluster!".to_string()).unwrap();
+    match obj2.get() {
         Ok(val) => println!("Put/Get String → {} ✓", val),
         Err(e) => println!("Put/Get String failed: {}", e),
     }
 
     // ── Remote Task (cluster mode) ─────────────────────────
     println!("\n--- Remote Task (cluster mode) ---");
-    let obj_ref = add_remote(10, 32);
+    let obj_ref = add_remote(&ray, 10, 32);
     println!("Task 'add(10, 32)' submitted");
     match obj_ref.get() {
         Ok(val) => println!("Task result: {} ✓", val),
         Err(e) => println!("Task result get failed: {}", e),
     }
 
-    let obj_ref2 = greet_remote("Ray Cluster".to_string());
+    let obj_ref2 = greet_remote(&ray, "Ray Cluster".to_string());
     match obj_ref2.get() {
         Ok(val) => println!("Greet result: {} ✓", val),
         Err(e) => println!("Greet result get failed: {}", e),
@@ -73,13 +68,13 @@ fn main() {
 
     // ── Namespace ─────────────────────────────────────────
     println!("\n--- Namespace ---");
-    match rayrust::get_namespace() {
+    match ray.namespace() {
         Ok(ns) => println!("Namespace: {}", ns),
         Err(e) => println!("Get namespace failed: {}", e),
     }
 
-    // ── Shutdown ──────────────────────────────────────────
+    // ── Shutdown (automatic on drop) ──────────────────────
     println!("\n--- Shutdown ---");
-    rayrust::shutdown();
+    drop(ray);
     println!("✓ Ray shutdown");
 }

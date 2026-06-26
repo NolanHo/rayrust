@@ -82,18 +82,18 @@ async fn fetch(url: String) -> Vec<u8> { /* ... */ }
 
 #[tokio::main]
 async fn main() -> Result<(), RayError> {
-    rayrust::init("127.0.0.1:6379")?;
+    let ray = Ray::connect(&RayConfig::new("127.0.0.1:6379"))?;
 
     // Sync submission + async get (zero threads blocked)
-    let r = add_remote(1, 2);
+    let r = add_remote(&ray, 1, 2);
     let v: i32 = r.get_async().await?;
     println!("add(1, 2) = {}", v);
 
     // Async submission (concurrent)
-    let r = add_remote_async(10, 20).await?;
+    let r = add_remote_async(&ray, 10, 20).await?;
     let v: i32 = r.get_async().await?;
 
-    rayrust::shutdown();
+    drop(ray);
     Ok(())
 }
 ```
@@ -125,25 +125,25 @@ impl Counter {
 
 #[tokio::main]
 async fn main() -> Result<(), RayError> {
-    rayrust::init("127.0.0.1:6379")?;
+    let ray = Ray::connect(&RayConfig::new("127.0.0.1:6379"))?;
 
     // Create actor via macro-generated factory
-    let arg = rayrust::serialize(&100i64)?;
-    let handle = rayrust::actor_create(
-        "__rayrust_actor_factory_counter", &[&arg], &[]
+    let arg = serialize(&100i64)?;
+    let handle = ray.actor_create(
+        "__rayrust_actor_factory_counter", &[&arg], &ActorOptions::new()
     )?;
 
     // Call methods asynchronously
-    let arg = rayrust::serialize(&5i64)?;
-    let r = rayrust::actor_call_async(
+    let arg = serialize(&5i64)?;
+    let r = ray.actor_call_async(
         handle.id(),
         "__rayrust_actor_factory_counter::increment",
         vec![arg],
     ).await?.cast::<i64>();
     let v = r.get_async().await?; // 105
 
-    handle.kill(true);
-    rayrust::shutdown();
+    ray.kill_actor(&handle, true)?;
+    drop(ray);
     Ok(())
 }
 ```
@@ -154,16 +154,16 @@ Rust ↔ Python with automatic XLANG header handling and complex type support:
 
 ```rust
 // Python → Rust: list, dict, nested, None, mixed types
-let obj = rayrust::task_call_python("my_module", "return_list", &[], &[])?;
+let obj = ray.task_call_python("my_module", "return_list", &[], &[])?;
 let val: Vec<i64> = obj.cast().get_async().await?; // [1, 2, 3, 4, 5]
 
 // Dynamic type (when return type is unknown)
-let obj = rayrust::task_call_python("my_module", "complex_func", &[], &[])?;
+let obj = ray.task_call_python("my_module", "complex_func", &[], &[])?;
 let val = obj.get_value_async().await?; // rmpv::Value
 
 // Rust → Python: send complex args
-let arg = rayrust::serialize(&vec![1i64, 2, 3])?;
-let obj = rayrust::task_call_python("my_module", "echo_list", &[&arg], &[])?;
+let arg = serialize(&vec![1i64, 2, 3])?;
+let obj = ray.task_call_python("my_module", "echo_list", &[&arg], &[])?;
 ```
 
 ### Resource Scheduling
@@ -172,31 +172,31 @@ Request CPU/GPU resources for tasks and actors:
 
 ```rust
 // Task with GPU
-let obj = rayrust::task_call_with_resources(
-    "train_model", &args, &[], &[("GPU", 1.0), ("CPU", 4.0)]
+let obj = ray.task_call(
+    "train_model", &args, &[], &TaskOptions::new().resource("GPU", 1.0).resource("CPU", 4.0)
 )?;
 
 // Actor with resources
-let handle = rayrust::actor_create_with_resources(
-    "gpu_actor_factory", &args, &[("GPU", 1.0)]
+let handle = ray.actor_create(
+    "gpu_actor_factory", &args, &ActorOptions::new().resource("GPU", 1.0)
 )?;
 ```
 
 ### Object Store
 
 ```rust
-let obj = rayrust::put(&42i32);
-let val: i32 = rayrust::get(&obj)?;
+let obj = ray.put(&42i32)?;
+let val: i32 = ray.get(&obj)?;
 
 // Async put/get
-let obj = rayrust::put_async(42i32).await?;
-let val: i32 = rayrust::get_async(&obj).await?;
+let obj = ray.put_async(42i32).await?;
+let val: i32 = obj.get_async().await?;
 
 // Batch get
-let vals = rayrust::get_many(&[obj1, obj2, obj3])?;
+let vals = ray.get_many(&[obj1, obj2, obj3])?;
 
 // Wait for readiness
-let (ready, unready) = rayrust::wait(&[obj1, obj2], 2, 5000)?;
+let (ready, unready) = ray.wait(&[obj1, obj2], 2, 5000)?;
 ```
 
 ## Architecture

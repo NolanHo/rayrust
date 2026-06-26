@@ -1,9 +1,6 @@
 //! Example: Async remote tasks with tokio + Ray cluster.
 //!
 //! Uses `CoreWorker::GetAsync` + eventfd for non-blocking async gets.
-//! Put/Get still uses sync API (Put goes to plasma store, not memory store).
-//! Remote task results arrive via CoreWorker's task receiver into memory store,
-//! where GetAsync's callback fires.
 
 use rayrust::prelude::*;
 
@@ -36,16 +33,16 @@ async fn main() {
         .node_ip(&node_ip)
         .code_search_path(vec![worker_so.clone()]);
 
-    rayrust::init_with_config(&config).expect("init failed");
+    let ray = Ray::connect(&config).expect("init failed");
     println!("✓ Ray initialized\n");
 
     // ── Concurrent Remote Tasks (tokio::join!) ──────────────
     println!("--- Concurrent Remote Tasks ---");
 
     let (r1, r2, r3) = tokio::join!(
-        add_remote_async(10, 32),
-        add_remote_async(100, 200),
-        greet_remote_async("Tokio".to_string()),
+        add_remote_async(&ray, 10, 32),
+        add_remote_async(&ray, 100, 200),
+        greet_remote_async(&ray, "Tokio".to_string()),
     );
 
     let r1: ObjectRef<i32> = r1.expect("add(10,32) failed");
@@ -68,7 +65,7 @@ async fn main() {
 
     let mut submit_futs = Vec::new();
     for i in 0..10i32 {
-        submit_futs.push(add_remote_async(i, i * 2));
+        submit_futs.push(add_remote_async(&ray, i, i * 2));
     }
 
     let obj_refs: Vec<ObjectRef<i32>> = join_all(submit_futs).await
@@ -92,9 +89,9 @@ async fn main() {
     }
     println!("Sum of all results: {} ✓", sum);
 
-    // ── Shutdown ────────────────────────────────────────────
+    // ── Shutdown (automatic on drop) ──────────────────────
     println!("\n--- Shutdown ---");
-    rayrust::shutdown();
+    drop(ray);
     println!("✓ Ray shutdown");
 }
 

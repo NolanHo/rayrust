@@ -224,17 +224,92 @@ static ray_bytes_t dup_bytes(const std::string &s) {
     return ray_bytes_t{data, s.size()};
 }
 
+/// Decode a hex-encoded string into raw bytes (binary-safe).
+/// Returns empty string on malformed input.
+static std::string hex_decode(const std::string &hex) {
+    if (hex.size() % 2 != 0) return {};
+    std::string out;
+    out.reserve(hex.size() / 2);
+    auto hex_val = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < hex.size(); i += 2) {
+        int hi = hex_val(hex[i]);
+        int lo = hex_val(hex[i + 1]);
+        if (hi < 0 || lo < 0) return {};
+        out.push_back(static_cast<char>((hi << 4) | lo));
+    }
+    return out;
+}
+
+/// Parse an options JSON string and fill an ActorCreationOptions struct.
+/// `options_json` may be NULL or empty (returns default options).
+static void parse_actor_options(const char *options_json,
+                                ray::internal::ActorCreationOptions &options) {
+    if (!options_json || options_json[0] == '\0') return;
+    auto j = nlohmann::json::parse(options_json);
+    if (j.contains("name")) {
+        options.name = j["name"].get<std::string>();
+    }
+    if (j.contains("ray_namespace")) {
+        options.ray_namespace = j["ray_namespace"].get<std::string>();
+    }
+    if (j.contains("resources") && j["resources"].is_object()) {
+        for (auto it = j["resources"].begin(); it != j["resources"].end(); ++it) {
+            options.resources[it.key()] = it.value().get<double>();
+        }
+    }
+    if (j.contains("max_restarts")) {
+        options.max_restarts = j["max_restarts"].get<int>();
+    }
+    if (j.contains("max_concurrency")) {
+        options.max_concurrency = j["max_concurrency"].get<int>();
+    }
+    if (j.contains("serialized_runtime_env_info")) {
+        options.serialized_runtime_env_info =
+            j["serialized_runtime_env_info"].get<std::string>();
+    }
+    if (j.contains("placement_group_id")) {
+        std::string pg_hex = j["placement_group_id"].get<std::string>();
+        std::string pg_id = hex_decode(pg_hex);
+        if (!pg_id.empty()) {
+            auto runtime = ray::internal::GetRayRuntime();
+            if (runtime) {
+                options.group = runtime->GetPlacementGroupById(pg_id);
+                if (j.contains("bundle_index")) {
+                    options.bundle_index = j["bundle_index"].get<int>();
+                }
+            }
+        }
+    }
+}
+
 // ─── Lifecycle ────────────────────────────────────────────────
 
 int ray_init(const char *address, int local_mode, const char *node_ip,
              const char *code_search_path,
              const char *runtime_env_json,
-             const char *log_dir) {
+             const char *log_dir,
+             int actor_lifetime,
+             const char *ns) {
     ray::RayConfig config;
     if (address && address[0] != '\0') {
         config.address = address;
     }
     config.local_mode = local_mode != 0;
+
+    // Set default actor lifetime: 0 = NON_DETACHED (default), 1 = DETACHED.
+    if (actor_lifetime == 1) {
+        config.default_actor_lifetime = ray::ActorLifetime::DETACHED;
+    }
+
+    // Set job-level namespace for named actors.
+    if (ns && ns[0] != '\0') {
+        config.ray_namespace = ns;
+    }
 
     // Set code search path for worker to find .so with remote functions.
     if (code_search_path && code_search_path[0] != '\0') {
@@ -530,40 +605,11 @@ ray_bytes_t ray_task_call_python(const char *module_name,
 
 // ─── Actor ────────────────────────────────────────────────────
 
-ray_bytes_t ray_actor_create(const char *func_name,
-                              const ray_bytes_t *args,
-                              size_t arg_count) {
-    try {
-        auto runtime = ray::internal::GetRayRuntime();
-        if (!runtime) return ray_bytes_t{nullptr, 0};
-
-        // For CPP actors, RemoteFunctionHolder is:
-        //   RemoteFunctionHolder(module_name="", function_name=func_name,
-        //                         class_name=func_name, LangType::CPP)
-        // The C++ SDK uses class_name to construct member function names:
-        //   class_name + "::" + method_name
-        // So if func_name="__rayrust_actor_factory_counter",
-        // member functions must be registered as
-        //   "__rayrust_actor_factory_counter::increment" etc.
-        ray::internal::RemoteFunctionHolder holder("", std::string(func_name),
-                                                   std::string(func_name),
-                                                   ray::internal::LangType::CPP);
-
-        auto task_args = build_task_args_cpp(args, arg_count);
-
-        ray::internal::ActorCreationOptions options;
-        std::string id = runtime->CreateActor(holder, task_args, options);
-        return dup_bytes(id);
-    } RAY_CATCH("ray_actor_create")
-    return ray_bytes_t{nullptr, 0};
-}
-
-/// Create an actor with resource requirements.
-/// `resources_json` is a JSON string like `{"CPU":1,"GPU":1}` or NULL to skip.
-ray_bytes_t ray_actor_create_with_resources(const char *func_name,
-                                              const ray_bytes_t *args,
-                                              size_t arg_count,
-                                              const char *resources_json) {
+/// Create an actor with full ActorCreationOptions via options JSON.
+ray_bytes_t ray_actor_create_with_options(const char *func_name,
+                                            const ray_bytes_t *args,
+                                            size_t arg_count,
+                                            const char *options_json) {
     try {
         auto runtime = ray::internal::GetRayRuntime();
         if (!runtime) return ray_bytes_t{nullptr, 0};
@@ -575,24 +621,19 @@ ray_bytes_t ray_actor_create_with_resources(const char *func_name,
         auto task_args = build_task_args_cpp(args, arg_count);
 
         ray::internal::ActorCreationOptions options;
-        if (resources_json && resources_json[0] != '\0') {
-            auto j = nlohmann::json::parse(resources_json);
-            for (auto it = j.begin(); it != j.end(); ++it) {
-                options.resources[it.key()] = it.value().get<double>();
-            }
-        }
+        parse_actor_options(options_json, options);
         std::string id = runtime->CreateActor(holder, task_args, options);
         return dup_bytes(id);
-    } RAY_CATCH("ray_actor_create_with_resources")
+    } RAY_CATCH("ray_actor_create_with_options")
     return ray_bytes_t{nullptr, 0};
 }
 
-/// Create a Python actor.
-/// `module_name` is the Python module, `class_name` is the Python class.
-ray_bytes_t ray_actor_create_python(const char *module_name,
-                                      const char *class_name,
-                                      const ray_bytes_t *args,
-                                      size_t arg_count) {
+/// Create a Python actor with full ActorCreationOptions via options JSON.
+ray_bytes_t ray_actor_create_python_with_options(const char *module_name,
+                                                   const char *class_name,
+                                                   const ray_bytes_t *args,
+                                                   size_t arg_count,
+                                                   const char *options_json) {
     try {
         auto runtime = ray::internal::GetRayRuntime();
         if (!runtime) return ray_bytes_t{nullptr, 0};
@@ -604,10 +645,11 @@ ray_bytes_t ray_actor_create_python(const char *module_name,
         auto task_args = build_task_args_python(args, arg_count);
 
         ray::internal::ActorCreationOptions options;
+        parse_actor_options(options_json, options);
         std::string id = runtime->CreateActor(holder, task_args, options);
         return dup_bytes(id);
     } catch (const std::exception &e) {
-        set_last_error_exception("ray_actor_create_python", e);
+        set_last_error_exception("ray_actor_create_python_with_options", e);
         return ray_bytes_t{nullptr, 0};
     }
 }

@@ -19,6 +19,18 @@ use crate::error::RayError;
 use crate::serialize::{deserialize, deserialize_xlang};
 
 /// A reference to an object stored in the Ray object store.
+///
+/// `ObjectRef` methods (`get`, `get_async`, `wait`) call the global Ray
+/// runtime directly rather than going through `&Ray`. This is intentional:
+/// `ObjectRef` is a value handle (like a file descriptor), not a context
+/// reference. It can be freely cloned, stored, and awaited without holding
+/// a borrow on `Ray`. The underlying C++ SDK is a global singleton, so
+/// there is no ambiguity about which runtime instance is used.
+///
+/// The `Ray` context only manages init/shutdown lifecycle. Once `Ray` is
+/// dropped, the runtime shuts down and `ObjectRef` operations will fail
+/// at runtime — but this is not enforced at compile time, matching the
+/// semantics of Ray in Python and C++.
 #[derive(Debug, Clone)]
 pub struct ObjectRef<T> {
     pub(crate) id: Vec<u8>,

@@ -10,7 +10,7 @@ rayrust wraps the Ray C++ SDK (`libray_api.so`) via a C ABI layer, providing idi
 
 | Feature | Local Mode | Cluster Mode |
 |---|:---:|:---:|
-| `init` / `shutdown` | ✅ | ✅ |
+| `Ray::connect` / `drop` (RAII lifecycle) | ✅ | ✅ |
 | `put` / `get` / `wait` | ✅ | ✅ |
 | `get_many` (batch get) | ✅ | ✅ |
 | `#[remote]` sync task | ✅ | ✅ |
@@ -20,9 +20,12 @@ rayrust wraps the Ray C++ SDK (`libray_api.so`) via a C ABI layer, providing idi
 | `get_async` (eventfd + AsyncFd, zero threads blocked) | ✅ | ✅ |
 | Python task (cross-language, complex types) | ✅ | ✅ |
 | Python actor (cross-language) | ✅ | ✅ |
-| Resource scheduling (`CPU`, `GPU`) | ✅ | ✅ |
+| Resource scheduling (`TaskOptions` / `ActorOptions` builder) | ✅ | ✅ |
+| `ActorOptions`: name, namespace, max_restarts, max_concurrency, runtime_env, placement_group | ✅ | ✅ |
+| `ActorLifetime::Detached` (detached actors) | ✅ | ✅ |
+| `RayConfig.namespace` (job-level namespace) | ✅ | ✅ |
 | PlacementGroup | ✅ | ✅ |
-| `get_actor` (named actor) / `cancel` / `kill` | ✅ | ✅ |
+| `get_actor` (named actor, cross-namespace) / `cancel` / `kill_actor` | ✅ | ✅ |
 | XLANG header auto-detection (Ray 2.51.1+ compatible) | ✅ | ✅ |
 | `rmpv::Value` dynamic deserialization | ✅ | ✅ |
 | `put_xlang` (for pass-by-reference to Python) | ✅ | ✅ |
@@ -206,7 +209,9 @@ Rust application code
     |
     v
 rayrust (safe Rust API)
-    ObjectRef<T>, ActorHandle, #[remote]/#[actor] macros
+    Ray (RAII context: connect / drop)
+    ObjectRef<T>, ActorHandle, ActorOptions, TaskOptions
+    #[remote]/#[actor] macros → &Ray callers
     get_async (eventfd + AsyncFd), persistent tokio runtime
     |
     v
@@ -245,6 +250,51 @@ Override the Ray version with `RAY_VERSION=2.51.1`.
 | Persistent global tokio runtime | Avoid per-call runtime creation overhead |
 | `#[actor]` macro | Reduces 40 lines of boilerplate to 10 |
 | Thread-local `ray_last_error()` | Structured error propagation from C++ to Rust |
+| `clear_error()` before FFI call | Prevents stale errors from prior operations |
+
+## Design Paradigm
+
+rayrust follows idiomatic Rust patterns, not C-in-Rust:
+
+### RAII Context — `Ray`
+
+All operations are methods on a `Ray` context object. `Drop` automatically calls `shutdown()` — impossible to forget cleanup, even on panic. `Ray` is `!Clone` (pass `&Ray` to share).
+
+```rust
+let ray = Ray::connect(&config)?;  // init
+let obj = ray.put(&42i32)?;         // method call
+// drop(ray) → automatic shutdown
+```
+
+### Builder Pattern — `RayConfig`, `ActorOptions`, `TaskOptions`
+
+All configuration uses chainable builder methods returning `Self`:
+
+```rust
+let config = RayConfig::new("127.0.0.1:6379")
+    .node_ip("192.168.1.5")
+    .namespace("production")
+    .detached_actors();
+
+let opts = ActorOptions::new()
+    .name("counter")
+    .max_restarts(3)
+    .max_concurrency(10)
+    .resource("GPU", 1.0);
+```
+
+### `'static` Futures — async methods don't borrow `&Ray`
+
+`task_call_async` and `actor_call_async` return `impl Future + Send + 'static`. The `&Ray` reference is only needed to submit the task, not to poll the result. This allows spawning futures on `JoinSet` without lifetime issues:
+
+```rust
+// These futures can be spawned on JoinSet — no &ray borrow needed
+let futs = (0..10).map(|i| add_remote_async(&ray, i, 1));
+```
+
+### Error Handling — `Result` everywhere, no hidden panics
+
+`put`, `kill_actor`, `get_actor` all return `Result`. Serialization errors in macro-generated callers use `.expect()` (documented), while submission errors propagate via `Result`. The C ABI's thread-local `last_error()` is checked after FFI calls and `clear_error()` is called before to prevent stale errors.
 
 ## Benchmark
 

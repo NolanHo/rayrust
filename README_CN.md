@@ -8,7 +8,7 @@ Ray 的 Rust SDK —— 通过 FFI 封装 Ray C++ SDK，提供地道的 Rust API
 
 | 特性 | 本地模式 | 集群模式 |
 |---|:---:|:---:|
-| `init` / `shutdown` | ✅ | ✅ |
+| `Ray::connect` / `drop`（RAII 生命周期管理） | ✅ | ✅ |
 | `put` / `get` / `wait` | ✅ | ✅ |
 | `get_many`（批量获取） | ✅ | ✅ |
 | `#[remote]` 同步任务 | ✅ | ✅ |
@@ -18,9 +18,12 @@ Ray 的 Rust SDK —— 通过 FFI 封装 Ray C++ SDK，提供地道的 Rust API
 | `get_async`（eventfd + AsyncFd，零线程阻塞） | ✅ | ✅ |
 | Python 任务（跨语言，复杂类型） | ✅ | ✅ |
 | Python Actor（跨语言） | ✅ | ✅ |
-| 资源调度（`CPU`、`GPU`） | ✅ | ✅ |
+| 资源调度（`TaskOptions` / `ActorOptions` builder） | ✅ | ✅ |
+| `ActorOptions`：name、namespace、max_restarts、max_concurrency、runtime_env、placement_group | ✅ | ✅ |
+| `ActorLifetime::Detached`（detached actor） | ✅ | ✅ |
+| `RayConfig.namespace`（job 级命名空间） | ✅ | ✅ |
 | PlacementGroup | ✅ | ✅ |
-| `get_actor` / `cancel` / `kill` | ✅ | ✅ |
+| `get_actor`（命名 actor，跨 namespace） / `cancel` / `kill_actor` | ✅ | ✅ |
 | XLANG header 自动检测（兼容 Ray 2.51.1+） | ✅ | ✅ |
 | `rmpv::Value` 动态反序列化 | ✅ | ✅ |
 | `put_xlang`（xlang 数据存入 object store） | ✅ | ✅ |
@@ -204,7 +207,9 @@ Rust 应用代码
     |
     v
 rayrust（安全 Rust API）
-    ObjectRef<T>, ActorHandle, #[remote]/#[actor] 宏
+    Ray (RAII context: connect / drop)
+    ObjectRef<T>, ActorHandle, ActorOptions, TaskOptions
+    #[remote]/#[actor] 宏 → &Ray 调用器
     get_async (eventfd + AsyncFd), 持久化 tokio runtime
     |
     v
@@ -243,8 +248,51 @@ libray_api.so（Ray C++ SDK）  ->  Ray Core (raylet / GCS / object store)
 | 持久化全局 tokio runtime | 避免每次调用创建 runtime 的开销 |
 | `#[actor]` 宏 | 将 40 行样板代码减少到 10 行 |
 | 线程局部 `ray_last_error()` | 从 C++ 到 Rust 的结构化错误传递 |
+| FFI 调用前 `clear_error()` | 防止上次操作的残留错误被误报 |
 
-## 性能基准
+## 编程范式
+
+rayrust 遵循地道的 Rust 设计模式，而非 C 风格的全局函数：
+
+### RAII Context — `Ray`
+
+所有操作都是 `Ray` 上下文对象的方法。`Drop` 自动调用 `shutdown()` —— 不可能忘记清理，即使 panic 也能正确关闭。`Ray` 是 `!Clone`（传 `&Ray` 共享）。
+
+```rust
+let ray = Ray::connect(&config)?;  // 初始化
+let obj = ray.put(&42i32)?;         // 方法调用
+// drop(ray) → 自动 shutdown
+```
+
+### Builder 模式 — `RayConfig`、`ActorOptions`、`TaskOptions`
+
+所有配置类使用链式 builder 方法，返回 `Self`：
+
+```rust
+let config = RayConfig::new("127.0.0.1:6379")
+    .node_ip("192.168.1.5")
+    .namespace("production")
+    .detached_actors();
+
+let opts = ActorOptions::new()
+    .name("counter")
+    .max_restarts(3)
+    .max_concurrency(10)
+    .resource("GPU", 1.0);
+```
+
+### `'static` Future — async 方法不借用 `&Ray`
+
+`task_call_async` 和 `actor_call_async` 返回 `impl Future + Send + 'static`。`&Ray` 引用仅在提交任务时需要，不跨 `.await` 存活。因此可以在 `JoinSet` 上 spawn，无生命周期问题：
+
+```rust
+// 这些 future 可以 spawn 到 JoinSet —— 不需要借用 &ray
+let futs = (0..10).map(|i| add_remote_async(&ray, i, 1));
+```
+
+### 错误处理 —— 全部 `Result`，无隐藏 panic
+
+`put`、`kill_actor`、`get_actor` 全部返回 `Result`。宏生成的调用器中序列化错误使用 `.expect()`（已文档化），提交错误通过 `Result` 传播。C ABI 的线程局部 `last_error()` 在 FFI 调用后检查，调用前 `clear_error()` 防止残留错误。
 
 Rust vs Python 在 Ray 集群上（500 个任务）：
 

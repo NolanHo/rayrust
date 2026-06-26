@@ -39,26 +39,22 @@ fn main() {
 
         // ── RPATH: ensure librayrust_worker.so can find libray_api.so at runtime ──
         //
-        // Problem: Ray's default_worker dlopens librayrust_worker.so. The dynamic
-        // linker searches for NEEDED libs using RPATH/RUNPATH of the loaded .so,
-        // NOT the calling process. Without RPATH, libray_api.so is not found.
+        // Ray's default_worker dlopens librayrust_worker.so. The dynamic linker
+        // searches for NEEDED libs using the loaded .so's RPATH, not the calling
+        // process. Without RPATH, libray_api.so is not found.
         //
-        // Solution: two RPATH entries, searched in order:
-        //   1. $ORIGIN — .so's own directory (deployment-friendly: copy
-        //      libray_api.so next to librayrust_worker.so)
-        //   2. absolute path to ray/cpp/lib at build time (dev-friendly:
-        //      same machine builds and runs)
+        // Two entries, searched in order:
+        //   1. $ORIGIN — .so's own directory (deployment: copy libray_api.so alongside)
+        //   2. absolute path to ray/cpp/lib (dev: same machine builds and runs)
         //
-        // We use DT_RPATH (not DT_RUNPATH) via --disable-new-dtags because
-        // RPATH is inherited by transitive dlopen dependencies, while RUNPATH
-        // is only searched for direct NEEDED deps. This matters because
-        // default_worker dlopens librayrust_worker.so.
+        // DT_RPATH (--disable-new-dtags) is used instead of DT_RUNPATH because
+        // RPATH is inherited by transitive dlopen dependencies, while RUNPATH is not.
         println!("cargo:rustc-link-arg-cdylib=-Wl,--disable-new-dtags");
         println!("cargo:rustc-link-arg-cdylib=-Wl,-rpath,$ORIGIN");
         println!("cargo:rustc-link-arg-cdylib=-Wl,-rpath,{}", lib_dir.display());
     }
 
-    // Link against libray_api.so and force it into NEEDED.
+    // Force libray_api.so into NEEDED.
     // Without --no-as-needed, the linker may drop libray_api.so from
     // the NEEDED list because no Rust code directly references its symbols.
     println!("cargo:rustc-link-arg-cdylib=-Wl,--no-as-needed");

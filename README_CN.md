@@ -344,6 +344,47 @@ ray start --head --port=6380  # 在安装了 ray[cpp] 的节点上
 | `#[actor]`（本地模式） | 否 | 全部在进程内 |
 | Python task/actor（xlang） | 否 | 使用 Python worker（所有节点可用） |
 
+### Worker `.so` RPATH（dlopen 兼容性）
+
+Ray 的 `default_worker` 通过 dlopen 加载 `librayrust_worker.so` 时，动态链接器使用 `.so` 自身的 `DT_RPATH` 搜索 `libray_api.so`（NEEDED 依赖）——**不使用**调用进程的 `LD_LIBRARY_PATH`。如果没有 RPATH，worker `.so` 加载失败，报 `libray_api.so: cannot open shared object file`。
+
+`rayrust-example-worker` 的 build script 已自动设置：
+
+```bash
+# 验证：应显示 DT_RPATH（不是 DT_RUNPATH）
+readelf -d target/release/librayrust_worker.so | grep RPATH
+# 0x000000000000000f (RPATH) Library rpath: [$ORIGIN:/path/to/ray/cpp/lib]
+```
+
+**如果你构建自己的 worker crate**（不使用 `rayrust-example-worker`），在 `build.rs` 中添加：
+
+```rust
+fn main() {
+    // ... 定位 ray_cpp_dir（RAY_CPP_DIR 或 pip 安装路径）...
+
+    let lib_dir = std::path::PathBuf::from(&ray_cpp_dir).join("lib");
+    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+
+    // DT_RPATH：dlopen 搜索，传递依赖继承。
+    //   1. $ORIGIN — 把 libray_api.so 复制到 worker .so 旁边（部署）
+    //   2. 绝对路径 — 同一台机器编译和运行（开发）
+    println!("cargo:rustc-link-arg-cdylib=-Wl,--disable-new-dtags");
+    println!("cargo:rustc-link-arg-cdylib=-Wl,-rpath,$ORIGIN");
+    println!("cargo:rustc-link-arg-cdylib=-Wl,-rpath,{}", lib_dir.display());
+
+    // 强制 libray_api.so 进入 NEEDED（链接器可能丢弃未被引用的库）。
+    println!("cargo:rustc-link-arg-cdylib=-Wl,--no-as-needed");
+    println!("cargo:rustc-link-arg-cdylib=-lray_api");
+    println!("cargo:rustc-link-arg-cdylib=-Wl,--as-needed");
+}
+```
+
+| 部署方式 | 原理 |
+|---|---|
+| **开发（同一台机器）** | RPATH #2 指向 `ray/cpp/lib` — 自动生效 |
+| **集群（复制 .so）** | 把 `libray_api.so` 复制到 worker `.so` 同目录 — RPATH #1（`$ORIGIN`）命中 |
+| **集群（共享路径）** | 构建时设 `RAY_CPP_DIR`，使 RPATH 指向 worker 节点的 `ray/cpp/lib` |
+
 ## 示例
 
 | 示例 | 描述 |

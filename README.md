@@ -348,6 +348,47 @@ ray start --head --port=6380  # on the node with ray[cpp] installed
 | `#[actor]` (local mode) | No | Everything runs in-process |
 | Python task/actor (xlang) | No | Uses Python workers (available everywhere) |
 
+### Worker `.so` RPATH (dlopen compatibility)
+
+When Ray's `default_worker` dlopens your `librayrust_worker.so`, the dynamic linker searches for `libray_api.so` (a NEEDED dependency) using the `.so`'s own `DT_RPATH` — **not** `LD_LIBRARY_PATH` from the calling process. Without RPATH, the worker `.so` fails to load with `libray_api.so: cannot open shared object file`.
+
+The `rayrust-example-worker` build script sets this automatically:
+
+```bash
+# Verify: should show DT_RPATH (not DT_RUNPATH)
+readelf -d target/release/librayrust_worker.so | grep RPATH
+# 0x000000000000000f (RPATH) Library rpath: [$ORIGIN:/path/to/ray/cpp/lib]
+```
+
+**If you build your own worker crate** (not using `rayrust-example-worker`), add this to your `build.rs`:
+
+```rust
+fn main() {
+    // ... locate ray_cpp_dir (RAY_CPP_DIR or pip-installed) ...
+
+    let lib_dir = std::path::PathBuf::from(&ray_cpp_dir).join("lib");
+    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+
+    // DT_RPATH: searched by dlopen, inherited by transitive deps.
+    //   1. $ORIGIN — copy libray_api.so next to your worker .so (deployment)
+    //   2. absolute path — same machine builds and runs (dev)
+    println!("cargo:rustc-link-arg-cdylib=-Wl,--disable-new-dtags");
+    println!("cargo:rustc-link-arg-cdylib=-Wl,-rpath,$ORIGIN");
+    println!("cargo:rustc-link-arg-cdylib=-Wl,-rpath,{}", lib_dir.display());
+
+    // Force libray_api.so into NEEDED (linker may drop unreferenced libs).
+    println!("cargo:rustc-link-arg-cdylib=-Wl,--no-as-needed");
+    println!("cargo:rustc-link-arg-cdylib=-lray_api");
+    println!("cargo:rustc-link-arg-cdylib=-Wl,--as-needed");
+}
+```
+
+| Deployment method | How it works |
+|---|---|
+| **Dev (same machine)** | RPATH entry #2 points to `ray/cpp/lib` — automatic |
+| **Cluster (copy .so)** | Copy `libray_api.so` to the same directory as your worker `.so` — RPATH entry #1 (`$ORIGIN`) finds it |
+| **Cluster (shared path)** | Set `RAY_CPP_DIR` at build time so RPATH points to the worker node's `ray/cpp/lib` |
+
 ## Examples
 
 | Example | Description |
